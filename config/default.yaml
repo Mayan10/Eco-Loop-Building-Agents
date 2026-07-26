@@ -145,6 +145,16 @@ control:
     economiser_enabled: true
     economiser_max_oat_c: 18.0
     economiser_min_oat_c: 4.0
+    # Cooling setpoint reduction applied while outdoor air sits in the
+    # free-cooling band above — cheap/clean outdoor air can absorb a slightly
+    # more aggressive setpoint at little to no energy cost.
+    economiser_setpoint_shift_c: 1.0
+    # supply_air_reset and precool: config validated from Phase 3 onward but
+    # not yet consumed by control/rulebased.py. Supply-air reset needs an
+    # actuator this project doesn't wire yet (a per-zone air-handling-unit
+    # node, not a zone thermostat); precool needs a forward look at each
+    # zone's occupancy *schedule*, not just its current occupancy_fraction
+    # reading. Both are real, tracked gaps, not oversights — see AGENTS.md.
     supply_air_reset_enabled: true
     supply_air_min_c: 12.0
     supply_air_max_c: 18.0

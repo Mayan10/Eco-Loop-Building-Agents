@@ -202,6 +202,7 @@ class RuleBasedSettings(_Base):
     economiser_enabled: bool = True
     economiser_max_oat_c: float = 18.0
     economiser_min_oat_c: float = 4.0
+    economiser_setpoint_shift_c: float = Field(default=1.0, gt=0.0)
     supply_air_reset_enabled: bool = True
     supply_air_min_c: float = 12.0
     supply_air_max_c: float = 18.0
