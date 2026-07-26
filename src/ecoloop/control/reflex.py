@@ -22,7 +22,9 @@ proposal came from an LLM, a heuristic, or a fixed schedule.
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from ecoloop.bus.models import SimClock, TelemetrySample
 from ecoloop.bus.policy import ControlPolicy, PolicyStore
@@ -32,9 +34,25 @@ from ecoloop.control.guardrails import ClampResult, ZoneActuationMemory, clamp_s
 from ecoloop.control.rulebased import RuleBasedController
 from ecoloop.logging import get_logger
 
-__all__ = ["ReflexController"]
+__all__ = ["GuardrailViolationRecord", "ReflexController"]
 
 _logger = get_logger(__name__, component="reflex")
+
+_DEFAULT_VIOLATION_HISTORY_SIZE = 200
+
+
+@dataclass(frozen=True, slots=True)
+class GuardrailViolationRecord:
+    """One timestep's guardrail clamp, kept for the MCP introspection tool.
+
+    Only zones where :attr:`~ecoloop.control.guardrails.ClampResult.was_clamped`
+    is true are recorded — this is a log of interventions, not of every
+    decision.
+    """
+
+    sim_clock: SimClock
+    zone: str
+    violations: tuple[str, ...]
 
 
 class ReflexController:
@@ -50,6 +68,9 @@ class ReflexController:
             ``bus.policy.default_ttl_minutes``.
         policy_store: The agent-published policy store. Required when
             ``control.controller == "agent"``; unused otherwise.
+        violation_history_size: How many recent
+            :class:`GuardrailViolationRecord` entries to retain, for the MCP
+            ``get_guardrail_violations`` tool.
     """
 
     def __init__(
@@ -61,12 +82,16 @@ class ReflexController:
         occupied_threshold_fraction: float,
         ttl_minutes: float,
         policy_store: PolicyStore | None = None,
+        violation_history_size: int = _DEFAULT_VIOLATION_HISTORY_SIZE,
     ) -> None:
         """Build the synchronous controllers and per-zone actuation memory."""
         self._zone_names = tuple(zone_names)
         self._controller = control.controller
         self._guardrails = guardrails
         self._policy_store = policy_store
+        self._violation_history: deque[GuardrailViolationRecord] = deque(
+            maxlen=violation_history_size
+        )
         self._baseline = BaselineController(
             zone_names=zone_names,
             control=control,
@@ -115,9 +140,26 @@ class ReflexController:
             )
             memory.record(result, elapsed_minutes=elapsed_minutes)
             results[name] = result
+            if result.was_clamped:
+                self._violation_history.append(
+                    GuardrailViolationRecord(
+                        sim_clock=sample.clock, zone=name, violations=result.violations
+                    )
+                )
 
         self._last_decision_clock = sample.clock
         return results
+
+    def recent_violations(self, count: int) -> tuple[GuardrailViolationRecord, ...]:
+        """The most recent guardrail interventions, newest first.
+
+        Args:
+            count: Maximum number of records to return.
+
+        Returns:
+            Up to ``count`` records, most recent first.
+        """
+        return tuple(reversed(self._violation_history))[:count]
 
     def _resolve_policy(self, sample: TelemetrySample) -> ControlPolicy | None:
         """Pick the active policy per the controller mode and degradation ladder.

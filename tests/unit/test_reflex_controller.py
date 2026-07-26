@@ -228,3 +228,76 @@ class TestGuardrailIntegration:
         results = reflex.decide(second_sample)
         # 40 minutes elapsed, cap is 1.5C/hour -> max 1.0C move from 21.0
         assert results["CORE_ZN"].heating_setpoint_c == 22.0
+
+
+class TestViolationHistory:
+    def test_no_violations_recorded_for_a_clean_proposal(self) -> None:
+        reflex = ReflexController(
+            zone_names=("CORE_ZN",),
+            control=control("baseline"),
+            guardrails=GUARDRAILS,
+            occupied_threshold_fraction=0.05,
+            ttl_minutes=90.0,
+        )
+        sample = make_sample(zones=(make_zone("CORE_ZN", occupancy_fraction=0.8),))
+        reflex.decide(sample)
+        assert reflex.recent_violations(10) == ()
+
+    def test_out_of_envelope_proposal_is_recorded(self) -> None:
+        store = PolicyStore(default_ttl_minutes=90.0, max_age_minutes=180.0)
+        reflex = ReflexController(
+            zone_names=("CORE_ZN",),
+            control=control("agent"),
+            guardrails=GUARDRAILS,
+            occupied_threshold_fraction=0.05,
+            ttl_minutes=90.0,
+            policy_store=store,
+        )
+        sample = make_sample(zones=(make_zone("CORE_ZN", occupancy_fraction=0.8),))
+        store.publish(
+            ControlPolicy(
+                issued_at=sample.clock,
+                source=PolicySource.AGENT,
+                ttl_minutes=90.0,
+                zone_setpoints=(
+                    ZoneSetpoint(zone="CORE_ZN", heating_setpoint_c=99.0, cooling_setpoint_c=99.0),
+                ),
+            )
+        )
+        reflex.decide(sample)
+        violations = reflex.recent_violations(10)
+        assert len(violations) == 1
+        assert violations[0].zone == "CORE_ZN"
+
+    def test_recent_violations_returns_newest_first_and_respects_count(self) -> None:
+        store = PolicyStore(default_ttl_minutes=90.0, max_age_minutes=180.0)
+        reflex = ReflexController(
+            zone_names=("CORE_ZN",),
+            control=control("agent"),
+            guardrails=GUARDRAILS,
+            occupied_threshold_fraction=0.05,
+            ttl_minutes=90.0,
+            policy_store=store,
+        )
+        for minute in (0, 10, 20):
+            sample = make_sample(
+                zones=(make_zone("CORE_ZN", occupancy_fraction=0.8),), minute=minute
+            )
+            store.publish(
+                ControlPolicy(
+                    issued_at=sample.clock,
+                    source=PolicySource.AGENT,
+                    ttl_minutes=90.0,
+                    zone_setpoints=(
+                        ZoneSetpoint(
+                            zone="CORE_ZN", heating_setpoint_c=99.0, cooling_setpoint_c=99.0
+                        ),
+                    ),
+                )
+            )
+            reflex.decide(sample)
+
+        violations = reflex.recent_violations(2)
+        assert len(violations) == 2
+        assert violations[0].sim_clock.minute == 20
+        assert violations[1].sim_clock.minute == 10
