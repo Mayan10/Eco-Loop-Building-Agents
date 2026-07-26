@@ -59,6 +59,12 @@ simulation:
     keep_eplus_out: true
     # Written to disk on any handle failure so the operator can see real names.
     dump_available_api_data_on_error: true
+    # .err content later reaches an LLM prompt as untrusted input; cap what
+    # gets parsed rather than reading an unbounded file into memory.
+    max_err_bytes: 2097152
+    # get_weather_forecast() is a disclosed forecast oracle (docs/ARCHITECTURE.md),
+    # capped so a careless call can't hand the model the rest of the year.
+    max_forecast_horizon_hours: 72
 
 # --------------------------------------------------------------------------- #
 # Zones, comfort targets, and hard physical limits

@@ -1,0 +1,167 @@
+# --------------------------------------------------------------------------- #
+# Zone wiring — the point map between Eco-Loop and EnergyPlus.
+#
+# Every EnergyPlus variable, meter and actuator name Eco-Loop touches is
+# declared here rather than embedded in `src/`. Two reasons:
+#
+#   1. These strings are a *contract with a specific IDF*. Swapping the building
+#      model should be a config change, not a code change.
+#   2. A handle that fails to resolve returns -1 rather than raising, so the
+#      failure surfaces as silent zeros. Having the full point list in one
+#      auditable file is what makes `ecoloop prepare --verify` able to check
+#      every point up front instead of discovering the gap mid-run.
+#
+# Names are matched case-insensitively: EnergyPlus upper-cases most identifiers,
+# so `Core_ZN` here and `CORE_ZN` internally are the same zone.
+# --------------------------------------------------------------------------- #
+version: 1
+
+# Which IDF this point map was written against. `prepare` warns on a mismatch.
+model: models/baseline/small_office.idf
+
+zones:
+  - name: Core_ZN
+    role: core
+    conditioned: true
+    people_object: Core_ZN People
+
+  - name: Perimeter_ZN_1
+    role: perimeter
+    orientation: south
+    conditioned: true
+    people_object: Perimeter_ZN_1 People
+
+  - name: Perimeter_ZN_2
+    role: perimeter
+    orientation: east
+    conditioned: true
+    people_object: Perimeter_ZN_2 People
+
+  - name: Perimeter_ZN_3
+    role: perimeter
+    orientation: north
+    conditioned: true
+    people_object: Perimeter_ZN_3 People
+
+  - name: Perimeter_ZN_4
+    role: perimeter
+    orientation: west
+    conditioned: true
+    people_object: Perimeter_ZN_4 People
+
+  # Unconditioned plenum. It has no thermostat and no occupants, so it is never
+  # actuated and never scored for comfort — but it is still observed, because an
+  # attic temperature excursion is a useful signal that something is wrong.
+  - name: Attic
+    role: plenum
+    conditioned: false
+    people_object: null
+
+# --------------------------------------------------------------------------- #
+# Output:Variables requested per zone. `{zone}` and `{people}` are substituted
+# with the zone name and its People object name respectively.
+#
+# `request_variable()` must be called for each of these BEFORE the run starts,
+# or `get_variable_handle()` fails afterwards regardless of what the IDF says.
+# --------------------------------------------------------------------------- #
+zone_variables:
+  air_temperature_c:
+    variable: Zone Mean Air Temperature
+    key: "{zone}"
+    required: true
+  relative_humidity_pct:
+    variable: Zone Air Relative Humidity
+    key: "{zone}"
+    required: true
+  heating_setpoint_c:
+    variable: Zone Thermostat Heating Setpoint Temperature
+    key: "{zone}"
+    required: false # absent on unconditioned zones
+  cooling_setpoint_c:
+    variable: Zone Thermostat Cooling Setpoint Temperature
+    key: "{zone}"
+    required: false
+  occupancy_fraction:
+    variable: Zone People Occupant Count
+    key: "{zone}"
+    required: false
+  # NOTE: the comfort variables are keyed on the *People* object, not the zone.
+  # Keying them on the zone name resolves to -1 and yields zeros forever.
+  pmv:
+    variable: Zone Thermal Comfort Fanger Model PMV
+    key: "{people}"
+    required: false
+  ppd_pct:
+    variable: Zone Thermal Comfort Fanger Model PPD
+    key: "{people}"
+    required: false
+  co2_ppm:
+    variable: Zone Air CO2 Concentration
+    key: "{zone}"
+    required: false # requires ZoneAirContaminantBalance, injected by `prepare`
+
+site_variables:
+  outdoor_air_temperature_c:
+    variable: Site Outdoor Air Drybulb Temperature
+    key: Environment
+    required: true
+  outdoor_relative_humidity_pct:
+    variable: Site Outdoor Air Relative Humidity
+    key: Environment
+    required: true
+  direct_normal_radiation_w_m2:
+    variable: Site Direct Solar Radiation Rate per Area
+    key: Environment
+    required: false
+  diffuse_horizontal_radiation_w_m2:
+    variable: Site Diffuse Solar Radiation Rate per Area
+    key: Environment
+    required: false
+  wind_speed_m_s:
+    variable: Site Wind Speed
+    key: Environment
+    required: false
+
+# --------------------------------------------------------------------------- #
+# Meters. Values are in JOULES for the reporting period just ended.
+#
+# Heating in this building is Coil:Heating:Fuel, so heating energy lands on
+# Heating:NaturalGas. A total that sums only the electricity meters silently
+# omits the entire heating season.
+# --------------------------------------------------------------------------- #
+meters:
+  - Electricity:Facility
+  - NaturalGas:Facility
+  - Cooling:Electricity
+  - Heating:NaturalGas
+  - Heating:Electricity
+  - Fans:Electricity
+  - InteriorLights:Electricity
+  - InteriorEquipment:Electricity
+
+# --------------------------------------------------------------------------- #
+# Actuators — the complete set of things Eco-Loop may change. Nothing outside
+# this list is writable, which is the mechanical half of "the LLM's only
+# actuation surface is a fixed allowlist".
+#
+# Setpoints go through `Zone Temperature Control` rather than the setpoint
+# *schedules*, because all five conditioned zones share one HTGSETP_SCH /
+# CLGSETP_SCH pair — actuating the schedule would move every zone at once and
+# make per-zone control impossible.
+# --------------------------------------------------------------------------- #
+zone_actuators:
+  heating_setpoint_c:
+    component_type: Zone Temperature Control
+    control_type: Heating Setpoint
+    key: "{zone}"
+  cooling_setpoint_c:
+    component_type: Zone Temperature Control
+    control_type: Cooling Setpoint
+    key: "{zone}"
+
+# Building-wide actuators keyed on a named IDF object rather than a zone.
+global_actuators:
+  lighting_fraction:
+    component_type: Schedule:Compact
+    control_type: Schedule Value
+    key: BLDG_LIGHT_SCH

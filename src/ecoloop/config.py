@@ -101,6 +101,8 @@ class OutputSettings(_Base):
     max_eso_mib: int = Field(default=2048, gt=0)
     keep_eplus_out: bool = True
     dump_available_api_data_on_error: bool = True
+    max_err_bytes: int = Field(default=2_097_152, gt=0)
+    max_forecast_horizon_hours: int = Field(default=72, gt=0)
 
 
 class SimulationSettings(_Base):
