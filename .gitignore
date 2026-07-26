@@ -1,0 +1,57 @@
+# --- secrets --------------------------------------------------------------
+.env
+*.pem
+*.key
+
+# --- python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.python-version
+
+# --- tooling caches -------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# --- run artefacts (never commit; regenerate with `make run-all`) ---------
+results/
+!results/.gitkeep
+models/generated/
+!models/generated/.gitkeep
+*.eso
+*.eio
+*.mtd
+*.mtr
+*.rdd
+*.mdd
+*.audit
+*.bnd
+*.shd
+*.dxf
+*.svg.err
+eplusout.*
+eplustbl.*
+sqlite.err
+
+# --- large binaries -------------------------------------------------------
+models/weather/*.epw
+!models/weather/README.md
+.ollama_cache/
+
+# --- os / editor ----------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,24 @@
+# Full annual profile — FINAL RESULTS ONLY.
+#
+# 8,760 simulated hours. This is the run that must complete with zero unhandled
+# exceptions (the 30%-weighted System Integration criterion) and the run whose
+# numbers appear in the report. It is slow: confirm with the user before
+# starting one during interactive work.
+#
+# Usage: ecoloop run all --profile full
+
+simulation:
+  run_period:
+    begin_month: 1
+    begin_day: 1
+    end_month: 12
+    end_day: 31
+  timesteps_per_hour: 6
+
+agent:
+  cadence_minutes: 60
+  min_invocation_gap_minutes: 15
+
+logging:
+  # An annual agent run emits a lot of records; INFO keeps the JSON log usable.
+  level: INFO

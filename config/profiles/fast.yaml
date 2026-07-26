@@ -1,0 +1,29 @@
+# Fast iteration profile — THE DEFAULT DURING DEVELOPMENT.
+#
+# Two design weeks (one heating-dominated, one cooling-dominated) instead of a
+# full year. Completes in ~1 minute instead of ~20, which is the difference
+# between a tight feedback loop and a coffee break. Use `--profile full` only
+# for final results.
+#
+# Usage: ecoloop run agent --profile fast
+
+simulation:
+  run_period:
+    begin_month: 7
+    begin_day: 15
+    end_month: 7
+    end_day: 28
+  timesteps_per_hour: 6
+
+agent:
+  # Tighter cadence so a two-week run still exercises a meaningful number of
+  # cognitive invocations (~336 simulated hours / 30 min = ~672 opportunities,
+  # rate-limited down to a realistic count).
+  cadence_minutes: 30
+  min_invocation_gap_minutes: 15
+
+analysis:
+  # A two-week run is not annual, so the annual plausibility envelope does not
+  # apply. Bounds are widened rather than disabled so gross errors still trip.
+  plausible_annual_kwh_per_m2_min: 0.5
+  plausible_annual_kwh_per_m2_max: 400.0

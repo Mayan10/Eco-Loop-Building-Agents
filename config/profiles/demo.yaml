@@ -1,0 +1,37 @@
+# Demo profile — tuned so a single unedited screen recording of `make demo`
+# satisfies the ≤3-minute video deliverable.
+#
+# Three summer days: long enough for the live TUI to show several cognitive
+# invocations and a visibly moving Δ% savings counter, short enough that the
+# whole sequence fits inside the recording budget.
+#
+# Usage: ecoloop run agent --profile demo --live
+
+simulation:
+  run_period:
+    begin_month: 7
+    begin_day: 20
+    end_month: 7
+    end_day: 22
+  timesteps_per_hour: 6
+
+agent:
+  # Aggressive cadence: an invocation every simulated 30 min keeps the LLM
+  # activity panel busy on camera rather than idle between long gaps.
+  cadence_minutes: 30
+  min_invocation_gap_minutes: 5
+
+llm:
+  cache:
+    # The demo must be repeatable offline and identically on every take.
+    enabled: true
+
+logging:
+  # Console output is replaced by the Rich live view during a demo run; keep the
+  # JSON log quiet so it does not fight for the terminal.
+  level: WARNING
+  console_rich: false
+
+analysis:
+  plausible_annual_kwh_per_m2_min: 0.05
+  plausible_annual_kwh_per_m2_max: 400.0

@@ -1,0 +1,192 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ecoloop"
+version = "0.1.0"
+description = "Eco-Loop: an autonomous closed-loop building control agent driving EnergyPlus with a local open-source LLM over MCP."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Eco-Loop Contributors" }]
+keywords = ["energyplus", "building-controls", "mcp", "llm", "hvac", "digital-twin"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering",
+]
+
+dependencies = [
+  # --- configuration & validation -------------------------------------------
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "pyyaml>=6.0",
+  # --- CLI & console --------------------------------------------------------
+  "typer>=0.12",
+  "rich>=13.7",
+  # --- logging --------------------------------------------------------------
+  "structlog>=24.1",
+  # --- building model manipulation -----------------------------------------
+  "eppy>=0.5.63",
+  # --- LLM transport --------------------------------------------------------
+  "httpx>=0.27",
+  "tenacity>=8.3",
+  "jinja2>=3.1",
+  # --- agent protocol -------------------------------------------------------
+  "mcp>=1.2",
+  # --- data & reporting -----------------------------------------------------
+  # pandas 3.x changes copy-on-write and string-dtype defaults; pin to the 2.x
+  # line that the analysis layer and pyarrow export path are written against.
+  "pandas>=2.2,<3.0",
+  "pyarrow>=16.0",
+  "numpy>=1.26,<3.0",
+  "plotly>=5.22",
+]
+
+[project.optional-dependencies]
+dashboard = ["streamlit>=1.36"]
+dev = [
+  "pytest>=8.2",
+  "pytest-cov>=5.0",
+  "pytest-asyncio>=0.23",
+  "hypothesis>=6.100",
+  "freezegun>=1.5",
+  "ruff>=0.5",
+  "mypy>=1.10",
+  "pre-commit>=3.7",
+  "import-linter>=2.0",
+  "types-PyYAML",
+  "pandas-stubs",
+]
+
+[project.scripts]
+ecoloop = "ecoloop.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Mayan10/Eco-Loop-Building-Agents"
+Repository = "https://github.com/Mayan10/Eco-Loop-Building-Agents"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ecoloop"]
+
+# --------------------------------------------------------------------------- #
+# Lint / format
+# --------------------------------------------------------------------------- #
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E", "W",    # pycodestyle
+  "F",         # pyflakes
+  "I",         # isort
+  "N",         # pep8-naming
+  "UP",        # pyupgrade
+  "B",         # bugbear
+  "C4",        # comprehensions
+  "SIM",       # simplify
+  "TID",       # tidy imports
+  "PTH",       # use pathlib
+  "RUF",       # ruff-specific
+  "D",         # pydocstyle
+  "ANN",       # annotations
+  "S",         # bandit / security
+  "BLE",       # blind except
+  "T20",       # no print
+]
+ignore = [
+  "D203",   # conflicts with D211
+  "D213",   # conflicts with D212
+  "ANN401", # Any is occasionally required at LLM/JSON boundaries
+  "S311",   # non-crypto randomness is fine for jitter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D", "S101", "ANN", "PLR2004", "S105", "S106"]
+"src/ecoloop/dashboard/**" = ["T20"]
+"scripts/**" = ["T20", "D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+# --------------------------------------------------------------------------- #
+# Types
+# --------------------------------------------------------------------------- #
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+warn_return_any = true
+disallow_untyped_defs = true
+disallow_any_generics = true
+no_implicit_reexport = true
+show_error_codes = true
+pretty = true
+files = ["src/ecoloop"]
+
+[[tool.mypy.overrides]]
+# Third-party packages that ship no type information.
+module = ["eppy.*", "plotly.*", "streamlit.*", "pyenergyplus.*", "mcp.*"]
+ignore_missing_imports = true
+
+# --------------------------------------------------------------------------- #
+# Tests
+# --------------------------------------------------------------------------- #
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+asyncio_mode = "auto"
+markers = [
+  "energyplus: requires a real EnergyPlus installation (deselect with -m 'not energyplus')",
+  "ollama: requires a running Ollama server with the configured model pulled",
+  "slow: takes more than ~5 seconds",
+]
+filterwarnings = ["error::DeprecationWarning:ecoloop.*"]
+
+[tool.coverage.run]
+source = ["src/ecoloop"]
+branch = true
+omit = ["*/dashboard/*", "*/ui/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "@overload",
+  "\\.\\.\\.",
+]
+
+# --------------------------------------------------------------------------- #
+# Architectural layering (enforced in CI — see N5.4)
+# --------------------------------------------------------------------------- #
+[tool.importlinter]
+root_package = "ecoloop"
+
+[[tool.importlinter.contracts]]
+name = "simulation and control must not depend on the agent"
+type = "forbidden"
+source_modules = ["ecoloop.simulation", "ecoloop.control"]
+forbidden_modules = ["ecoloop.agent", "ecoloop.mcp"]
+
+[[tool.importlinter.contracts]]
+name = "the bus is the innermost layer and depends on nothing else"
+type = "forbidden"
+source_modules = ["ecoloop.bus"]
+forbidden_modules = [
+  "ecoloop.simulation",
+  "ecoloop.control",
+  "ecoloop.agent",
+  "ecoloop.mcp",
+  "ecoloop.analysis",
+]
