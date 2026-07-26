@@ -3,7 +3,8 @@
 Operational briefing for coding agents. Not documentation — `README.md` does that.
 If a line here doesn't change what you'd *do*, delete it.
 
-> **Build status:** Phase 1 of 9 complete (skeleton, config, logging, errors, `doctor`, CI).
+> **Build status:** Phase 2 of 9 complete (simulation spine: discovery, handles, callbacks,
+> IDF prepare — verified end to end against a real EnergyPlus 25.2.0 install).
 > Sections marked ⏳ describe files that do not exist yet. Everything unmarked is real
 > and verified. This file is updated at the close of every phase.
 
@@ -129,6 +130,43 @@ Contracts live in `[tool.importlinter]` in `pyproject.toml`.
 - Heating ≥ cooling causes simultaneous heating and cooling and *raises* energy use.
 - `api.api_version()` returns the **API** version (`0.2`), not the EnergyPlus version. Parse
   the install directory name instead.
+- **The baseline IDF ships with weather-file run periods disabled.** Its `SimulationControl`
+  object has `Run Simulation for Weather File Run Periods = No` — DOE reference models are
+  distributed for sizing studies, not annual simulation. Unpatched, EnergyPlus runs only the
+  design-day sizing environments, reports success (`rc == 0`, zero Severe errors), and never
+  touches the weather file. Every meter and variable still resolves and reads back a real
+  number — just the sizing-period one, not the run anyone asked for. No exception anywhere;
+  `prepare` flips this to `Yes` (and `Run Simulation for Sizing Periods` to `No`, since
+  autosizing is controlled by the separate `Do *Sizing Calculation` flags and doesn't need
+  the sizing periods to also report output). Found by actually running the full spine against
+  the real engine, not by reasoning about the API in the abstract — reinforces the value of §11.
+- **`get_meter_handle` returns -1 for `"Electricity:Facility"` specifically, for the whole run,
+  in EnergyPlus 25.2.0.** It is a real, actively-reported meter — it has its own index in
+  `eplusout.mtr` with genuine hourly values — and every other Facility-level meter
+  (`NaturalGas:Facility`, `ElectricityNet:Facility`, `ElectricityPurchased:Facility`, ...)
+  resolves normally via the same call. Reproduced against the raw `pyenergyplus` API, so it is
+  not a bug in this codebase. Use `ElectricityNet:Facility` instead — numerically identical here
+  since this building has no on-site generation to net out. See `config/zones.yaml`.
+- **A missing handle must fail once, not every timestep.** `HandleRegistry.ensure_resolved`
+  tracks a failed attempt separately from a successful one — without that, one bad meter or
+  actuator re-attempts full resolution (and re-raises) on every remaining timestep, and each
+  raise passes through the callback guard's exception logging, turning a config error into a
+  multi-minute stall that reads like a performance bug. Found by watching a real run hang.
+- **EnergyPlus still runs full physics — and fires every registered callback — for the
+  sizing design-days**, before the weather-file run period even begins. Those timesteps are
+  neither warmup nor real telemetry; publishing them mixes a design day's numbers into the
+  run anyone asked for, and for an autosized system they can outnumber the real run by an
+  order of magnitude. Gate on `is_weather_run_period()` (`kind_of_sim() == 3`, determined
+  empirically — undocumented in the Python API).
+- **Selecting `--profile fast`/`--profile demo` changes nothing about the IDF by itself.**
+  The baseline `RunPeriod` object ships spanning the full year, and nothing reads
+  `simulation.run_period` back into it — every profile silently ran the same annual period
+  until `prepare` started copying the active profile's begin/end month/day onto the IDF's
+  `RunPeriod`. Without this, "fast" iteration was exactly as slow as "full".
+- **`exchange.minutes()` is not reliably `0-59`** — it has been observed returning values
+  past 60 (e.g. 65) near an environment boundary. Building `SimClock` from the raw field
+  values crashes Pydantic validation deep inside the reflex callback. Roll `(hour, minute)`
+  through `datetime.timedelta` instead of trusting either field in isolation.
 
 ## 8. Conventions
 
@@ -166,8 +204,8 @@ models/          baseline/ pristine IDF · prepared/ post-inject · generated/ p
 src/ecoloop/
   config.py      layered settings   errors.py  typed hierarchy   logging.py  structlog
   doctor.py      environment checks  cli.py    Typer entry point
-  simulation/    locate.py works; ⏳ E+ lifecycle, handles, callbacks, IDF patching
-  bus/           ⏳ TelemetryBus, PolicyStore, events, Pydantic models
+  simulation/    locate/energyplus/handles/callbacks/idf/prepare/errfile/weather all work
+  bus/           models.py works; ⏳ TelemetryBus, PolicyStore, events
   control/       ⏳ reflex, guardrails, baseline/rulebased controllers, ECM catalogue
   agent/         ⏳ orchestrator, LLM client, prompts, context budgeting, self-heal, trace
   mcp/           ⏳ MCP server + observe/actuate/introspect tools

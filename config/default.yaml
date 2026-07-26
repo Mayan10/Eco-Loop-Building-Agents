@@ -84,6 +84,9 @@ comfort:
 
   # Indoor air quality: ASHRAE 62.1-flavoured CO2 ceiling for occupied hours.
   co2_max_ppm: 1000.0
+  # Background outdoor CO2 assumed by the injected ZoneAirContaminantBalance
+  # schedule (`prepare`). 400 ppm is the modern global-average ambient level.
+  outdoor_co2_ppm: 400.0
 
   # Occupancy is derived from the IDF People schedule; a zone counts as
   # occupied when fractional occupancy exceeds this.

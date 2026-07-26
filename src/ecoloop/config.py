@@ -145,6 +145,7 @@ class ComfortSettings(_Base):
     pmv_tolerance_band: float = Field(default=0.7, gt=0.0)
     ppd_max_pct: float = Field(default=10.0, gt=0.0, le=100.0)
     co2_max_ppm: float = Field(default=1000.0, gt=0.0)
+    outdoor_co2_ppm: float = Field(default=400.0, gt=0.0)
     occupied_threshold_fraction: float = Field(default=0.05, ge=0.0, le=1.0)
 
     @model_validator(mode="after")

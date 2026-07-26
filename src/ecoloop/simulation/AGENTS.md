@@ -54,6 +54,27 @@ callback:    if not api.exchange.api_data_fully_ready(state): return   ← earli
   `Heating:Electricity`. Summing only electricity understates total site energy.
 - The stock IDF has **no `ZoneAirContaminantBalance`**, so CO₂ output is genuinely absent
   and must be injected for the ASHRAE 62.1 ceiling to mean anything.
+- **The baseline IDF ships with `SimulationControl.Run Simulation for Weather File Run
+  Periods = No`.** Unpatched, EnergyPlus runs only the design-day sizing environments and
+  never touches the weather file — `rc == 0`, zero Severe errors, every meter and variable
+  resolves and reads back a real number, all of it from the wrong environment. `prepare`
+  flips this to `Yes` and turns sizing-period simulation off (autosizing itself is
+  unaffected; that's controlled by the separate `Do *Sizing Calculation` flags).
+- **`get_meter_handle("Electricity:Facility")` returns -1 for the entire run, in EnergyPlus
+  25.2.0** — reproduced against the raw API, not a bug in this codebase. The meter is real
+  (indexed in `eplusout.mtr` with genuine values); every other Facility meter resolves fine
+  through the same call. `config/zones.yaml` uses `ElectricityNet:Facility` instead, which is
+  numerically identical here (no on-site generation to net out).
+- **Sizing design-days fire every registered callback too**, before the run period begins.
+  `callbacks.py` gates telemetry publication on `backend.is_weather_run_period()`
+  (`kind_of_sim() == 3`, found empirically) — without it, a run publishes tens of thousands
+  of design-day samples nobody asked for, on top of the real ones.
+- **Profiles don't narrow the IDF by themselves.** `prepare_idf` has to copy
+  `simulation.run_period` onto the IDF's `RunPeriod` object explicitly, or `--profile fast`
+  silently simulates the full year exactly like `--profile full` does.
+- **`exchange.minutes()` can exceed 59** near an environment boundary (observed: 65). Roll
+  `(hour, minute)` through `datetime.timedelta`, never construct `SimClock` from the raw
+  fields directly.
 - `callback_begin_new_environment` fires once per *environment* — sizing runs first, then
   the run period. Reset accumulators there; never blend the two.
 - Meters are **Joules**, and at `Timestep` frequency they are per-timestep, not per-hour.
