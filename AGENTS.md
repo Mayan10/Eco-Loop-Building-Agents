@@ -3,8 +3,9 @@
 Operational briefing for coding agents. Not documentation — `README.md` does that.
 If a line here doesn't change what you'd *do*, delete it.
 
-> **Build status:** Phase 2 of 9 complete (simulation spine: discovery, handles, callbacks,
-> IDF prepare — verified end to end against a real EnergyPlus 25.2.0 install).
+> **Build status:** Phase 3 of 9 complete (telemetry bus, policy store, guardrails, reflex
+> controller, baseline and rule-based controllers — verified end to end against a real
+> EnergyPlus 25.2.0 install, rule-based vs. baseline compared on the fast profile).
 > Sections marked ⏳ describe files that do not exist yet. Everything unmarked is real
 > and verified. This file is updated at the close of every phase.
 
@@ -167,6 +168,41 @@ Contracts live in `[tool.importlinter]` in `pyproject.toml`.
   past 60 (e.g. 65) near an environment boundary. Building `SimClock` from the raw field
   values crashes Pydantic validation deep inside the reflex callback. Roll `(hour, minute)`
   through `datetime.timedelta` instead of trusting either field in isolation.
+- **Independent per-field rate-limiting can violate the deadband even when every stage
+  individually upholds it.** Capping heating and cooling separately, each relative to its
+  own previous value, can pull them toward each other faster than either one alone would
+  suggest. `control/guardrails.py` re-enforces the deadband (and the envelope, for the same
+  reason — see next item) as a **final** pass after rate/hold, not just before it. Found by
+  a hypothesis property test, not by inspection.
+- **The "hold at previous setpoint" branch must not trust `memory` blindly.** It returns
+  `ZoneActuationMemory`'s stored values verbatim on the assumption they came from a prior
+  valid clamp. A corrupted or externally-constructed memory can smuggle an out-of-envelope
+  value straight through otherwise, bypassing the clamp entirely under the "nothing changed"
+  branch. Re-clamp to the envelope after rate/hold regardless of which path produced the
+  pre-final value.
+- **Two different clocks look interchangeable in `ZoneActuationMemory` and are not.**
+  `minutes_since_change` (time since the setpoint last *changed*, keeps accumulating while
+  it doesn't) is right for the **hold** check but wrong for the **rate cap** — using it there
+  lets a setpoint that has sat still for two hours jump twice as far in one tick as one that
+  changed a minute ago. The rate cap needs `elapsed_minutes` (time since the *previous call*,
+  i.e. one control-tick's duration) instead. Relatedly, the hold check itself must use
+  `memory.minutes_since_change` **projected forward** by the current tick's `elapsed_minutes`
+  — `ZoneActuationMemory.record()` only folds that tick in *after* the decision, so checking
+  the stale, not-yet-updated figure refuses changes that are actually long overdue.
+- **A "smarter" controller can legitimately cost more energy than a naive one, and that is
+  not a bug.** Comparing `rulebased` against `baseline` on the fast profile:
+  rule-based uses ~6% *more* energy (3435 vs. 3241 kWh) while cutting comfort violations from
+  7.7% to 0.1% of occupied timesteps (max |PMV| 1.34 → 0.52). Baseline's deep, config-defined
+  unoccupied setback (29.4 °C cooling) saves energy specifically by tolerating a very hot
+  unoccupied zone — exactly the failure mode §1 calls out ("saving energy by making occupants
+  uncomfortable is an explicit failure"). This is not what the rule-based-vs-agent comparison
+  in later phases should look like; it is what makes baseline a *floor*, not a fair target.
+- **`economiser_shift` in `control/ecm.py` does not model real free cooling** — this project
+  has no outdoor-air-damper actuator wired, only zone thermostats, so lowering the cooling
+  setpoint when outdoor air is mild still costs full compressor energy; it is a modest,
+  honestly-limited heuristic, not genuine economiser savings. It also fired on well under 1%
+  of timesteps in the fast profile's July window (Chicago summer rarely sits in a 4-18 °C
+  band during the day), so it is not what drove the energy difference above.
 
 ## 8. Conventions
 
@@ -205,8 +241,8 @@ src/ecoloop/
   config.py      layered settings   errors.py  typed hierarchy   logging.py  structlog
   doctor.py      environment checks  cli.py    Typer entry point
   simulation/    locate/energyplus/handles/callbacks/idf/prepare/errfile/weather all work
-  bus/           models.py works; ⏳ TelemetryBus, PolicyStore, events
-  control/       ⏳ reflex, guardrails, baseline/rulebased controllers, ECM catalogue
+  bus/           models/telemetry/policy all work; ⏳ events (arrives with P6's triggers)
+  control/       base/guardrails/ecm/baseline/rulebased/reflex all work
   agent/         ⏳ orchestrator, LLM client, prompts, context budgeting, self-heal, trace
   mcp/           ⏳ MCP server + observe/actuate/introspect tools
   analysis/      ⏳ metrics, comfort, compare, charts, static HTML report
