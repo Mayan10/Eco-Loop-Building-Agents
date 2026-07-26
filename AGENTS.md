@@ -3,8 +3,11 @@
 Operational briefing for coding agents. Not documentation — `README.md` does that.
 If a line here doesn't change what you'd *do*, delete it.
 
-> **Build status:** Phase 5 of 9 complete (MCP server: all 17 tools live, sandboxed path
-> resolution, the agent trace writer — 272 tests, 94% coverage on `mcp/`).
+> **Build status:** Phase 6 of 9 complete (cognitive layer: context budgeting, the versioned
+> system prompt, the Ollama client with retry/circuit-breaker/cache, and the tool-calling
+> orchestrator — verified end to end against a real running Ollama `qwen2.5:3b-instruct`,
+> which correctly read a zone's telemetry, recognised a PMV comfort violation, and proposed a
+> setpoint change with real reasoning. 301 tests, 92% coverage on `agent/`).
 > Sections marked ⏳ describe files that do not exist yet. Everything unmarked is real
 > and verified. This file is updated at the close of every phase.
 
@@ -211,6 +214,19 @@ Contracts live in `[tool.importlinter]` in `pyproject.toml`.
   plausibly returns more than a few KB, so truncation was left undone rather than added
   speculatively — a tracked gap, not an oversight, revisit if a future tool (e.g. a large
   trace dump) can exceed it.
+- **Ollama's tool-calling works on even the 3B model, confirmed against a real running
+  server, not assumed from documentation.** `qwen2.5:3b-instruct` correctly selected
+  `get_zone_telemetry` with the right argument on the first try, and — end to end through
+  `CognitiveOrchestrator` — correctly read a PMV comfort violation and proposed a sensible
+  setpoint change with real reasoning text. `message.tool_calls[].function.{name,arguments}`
+  is the exact shape to parse; `id` is present but not always meaningful, so
+  `agent/llm.py`'s parser treats it as optional (`tc.get("id", "")`) rather than required.
+- **The CLI's `run` subcommand — the one that would start a live simulation with this
+  cognitive layer attached on a worker thread — does not exist yet.** Every piece is built
+  and tested in isolation and proven against a real LLM via a hand-constructed
+  `ServerState` — the worker-thread wiring (its own asyncio loop running the orchestrator on
+  a cadence, alongside EnergyPlus on the main thread) is a distinct integration task, not
+  done here. Tracked as a gap, not an oversight; Phase 8's annual runs need it too.
 - **`economiser_shift` in `control/ecm.py` does not model real free cooling** — this project
   has no outdoor-air-damper actuator wired, only zone thermostats, so lowering the cooling
   setpoint when outdoor air is mild still costs full compressor energy; it is a modest,
@@ -252,11 +268,15 @@ Contracts live in `[tool.importlinter]` in `pyproject.toml`.
   `ReflexCallbacks` and every `control/` controller — the same unmodified production code
   that ran against real EnergyPlus — against this fake instead, which is the strongest test
   in the suite: it proves the `SimulationBackend` protocol seam is real, not just that the
-  fake behaves. ⏳ `fake_llm.py` (scripted valid / malformed / absurd / timeout) arrives with
-  the LLM client in Phase 6 — faking an interface that doesn't exist yet isn't meaningful.
+  fake behaves. `tests/fakes/fake_llm.py` works too: `ScriptedLLM` (queued responses, for
+  exercising the orchestrator's tool-calling loop deterministically) and `FailingLLM` /
+  `TimeoutLLM` / `MalformedToolCallLLM` (each always raises the failure mode it's named for)
+  — anything satisfying `OllamaClient`'s duck-typed `chat()` works, since
+  `CognitiveOrchestrator` only ever calls that one method.
 - ⏳ `tests/property/` (dedicated hypothesis suite over *arbitrary* LLM output) and
-  `tests/chaos/` (kills the LLM mid-run, asserts the simulation still completes) arrive in
-  Phase 6, once there is an LLM client to aim them at. Property tests on the guardrail chain
+  `tests/chaos/` (kills the LLM mid-run via `fake_llm.py`'s failing variants, asserts the
+  simulation still completes) arrive in Phase 7 alongside self-healing, which is what chaos
+  scenarios are really testing the recovery path of. Property tests on the guardrail chain
   itself already exist inline in `tests/unit/test_guardrails.py` — see §7's landmines on the
   two real bugs they found before this ever ran against a controller.
 - Mark anything needing the real engine `@pytest.mark.energyplus`.
@@ -278,7 +298,7 @@ src/ecoloop/
   simulation/    locate/energyplus/handles/callbacks/idf/prepare/errfile/weather all work
   bus/           models/telemetry/policy all work; ⏳ events (arrives with P6's triggers)
   control/       base/guardrails/ecm/baseline/rulebased/reflex all work
-  agent/         ⏳ orchestrator, LLM client, prompts, context budgeting, self-heal, trace
+  agent/         context/prompts/llm/orchestrator all work; ⏳ self-heal (Phase 7)
   mcp/           server/tools_observe/tools_actuate/tools_introspect/sandbox/trace all work
   analysis/      ⏳ metrics, comfort, compare, charts, static HTML report
 scripts/         generate_signals.py · check_agent_commands.py
