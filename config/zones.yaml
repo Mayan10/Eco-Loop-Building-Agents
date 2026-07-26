@@ -128,9 +128,19 @@ site_variables:
 # Heating in this building is Coil:Heating:Fuel, so heating energy lands on
 # Heating:NaturalGas. A total that sums only the electricity meters silently
 # omits the entire heating season.
+#
+# NOTE: "Electricity:Facility" is deliberately NOT on this list. It is a real,
+# actively-reported meter — it has its own index in eplusout.mtr and real
+# hourly values — but EnergyPlus 25.2.0's Python data-exchange API returns -1
+# from get_meter_handle() for that exact name, for the entire run, while every
+# other Facility-level meter (NaturalGas:Facility, ElectricityNet:Facility,
+# ElectricityPurchased:Facility, ...) resolves normally. Confirmed reproducible
+# against the raw pyenergyplus API, independent of anything in this codebase.
+# "ElectricityNet:Facility" is numerically identical for this building (no
+# on-site generation/export exists to net out) and is used in its place.
 # --------------------------------------------------------------------------- #
 meters:
-  - Electricity:Facility
+  - ElectricityNet:Facility
   - NaturalGas:Facility
   - Cooling:Electricity
   - Heating:NaturalGas
