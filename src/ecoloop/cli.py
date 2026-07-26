@@ -20,6 +20,7 @@ from rich.text import Text
 
 from ecoloop import __version__
 from ecoloop.agent.selfheal import run_with_self_healing
+from ecoloop.analysis.compare import compare_runs, find_latest_runs
 from ecoloop.config import EcoLoopSettings, load_settings
 from ecoloop.doctor import CheckResult, Status, run_checks
 from ecoloop.errors import EcoLoopError
@@ -296,6 +297,93 @@ def run(
 
     if exit_code:
         raise typer.Exit(code=exit_code)
+
+
+# --------------------------------------------------------------------------- #
+# compare
+# --------------------------------------------------------------------------- #
+def _resolve_run_dirs(
+    settings: EcoLoopSettings, latest: bool, runs: list[Path] | None
+) -> list[Path]:
+    """Resolve --latest/--runs into a concrete, ordered list of run directories."""
+    if runs:
+        return runs
+    discovered = find_latest_runs(settings.resolve(Path("results/runs")))
+    if not discovered:
+        console.print(
+            "[red]No runs found under results/runs.[/red] Run 'ecoloop run baseline' "
+            "and 'ecoloop run rulebased' first."
+        )
+        raise typer.Exit(code=1)
+    # A stable, human-meaningful order beats whatever dict-insertion order
+    # find_latest_runs happened to produce.
+    order = {"baseline": 0, "rulebased": 1, "agent": 2}
+    return [
+        run_dir
+        for _, run_dir in sorted(discovered.items(), key=lambda item: order.get(item[0], 99))
+    ]
+
+
+@app.command()
+def compare(
+    config: ConfigOption = None,
+    profile: ProfileOption = None,
+    latest: Annotated[
+        bool, typer.Option("--latest", help="Compare each controller's most recent run.")
+    ] = True,
+    runs: Annotated[
+        list[Path] | None,
+        typer.Option("--run", help="Explicit run directory; repeatable. Overrides --latest."),
+    ] = None,
+    output: Annotated[
+        Path | None, typer.Option("--output", help="Write the comparison as JSON to this path.")
+    ] = None,
+) -> None:
+    """Compare controllers' energy and comfort metrics side by side.
+
+    Refuses (non-zero exit, no partial table) if the runs being compared did
+    not share the same profile, weather file, and EnergyPlus version — a
+    difference in kWh between runs that faced different conditions measures
+    nothing about the controller.
+    """
+    settings = _load(config, profile)
+    configure_logging(settings.logging)
+    run_dirs = _resolve_run_dirs(settings, latest, runs)
+
+    try:
+        result = compare_runs(run_dirs, settings)
+    except EcoLoopError as exc:
+        console.print(f"[red]✗[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+    table.add_column("Controller")
+    table.add_column("Total kWh", justify="right")
+    table.add_column("Comfort violation %", justify="right")
+    table.add_column("Max |PMV|", justify="right")
+    table.add_column("Unmet hours", justify="right")
+    for entry in result.entries:
+        violation_pct = (
+            f"{entry.comfort.violation_fraction * 100:.2f}%"
+            if entry.comfort.violation_fraction is not None
+            else "n/a"
+        )
+        max_pmv = (
+            f"{entry.comfort.max_abs_pmv:.2f}" if entry.comfort.max_abs_pmv is not None else "n/a"
+        )
+        table.add_row(
+            entry.manifest.controller,
+            f"{entry.energy.total_kwh:.1f}",
+            violation_pct,
+            max_pmv,
+            f"{entry.comfort.unmet_hours:.1f}",
+        )
+    console.print(table)
+
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(result.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        console.print(f"Wrote comparison to {output}")
 
 
 # --------------------------------------------------------------------------- #

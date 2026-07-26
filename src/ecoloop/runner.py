@@ -59,6 +59,7 @@ class RunManifest(BaseModel):
 
     controller: str
     profile: str
+    energyplus_version: str
     started_at: datetime
     ended_at: datetime
     idf_path: Path
@@ -192,6 +193,7 @@ def run_controller(
     manifest = RunManifest(
         controller=controller,
         profile=profile,
+        energyplus_version=install.version_string,
         started_at=started_at,
         ended_at=ended_at,
         idf_path=prepared_idf,
