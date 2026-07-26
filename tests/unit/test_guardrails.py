@@ -9,6 +9,7 @@ outside the envelope" has to be true for every input, not just typical ones.
 
 from __future__ import annotations
 
+import pytest
 from hypothesis import assume, given
 from hypothesis import strategies as st
 
@@ -85,17 +86,29 @@ class TestDeadband:
         )
 
     def test_widening_that_would_exceed_cooling_max_lowers_heating_instead(self) -> None:
+        """Under DEFAULT_GUARDRAILS, heating's own envelope max (23) sits well
+        below cooling_max - deadband (28), so raising cooling can always
+        restore the deadband and the "lower heating instead" branch never
+        triggers - this uses a guardrail config where the two ranges overlap
+        more tightly, so raising cooling to heating_c + deadband would
+        overshoot cooling_setpoint_max_c and heating must come down instead.
+        """
+        tight_guardrails = DEFAULT_GUARDRAILS.model_copy(
+            update={"heating_setpoint_min_c": 15.0, "heating_setpoint_max_c": 29.0}
+        )
         result = clamp_setpoints(
-            proposed_heating_c=23.0,
-            proposed_cooling_c=29.5,
+            proposed_heating_c=29.0,  # heating at its max
+            proposed_cooling_c=29.5,  # gap only 0.5, below the 2.0 deadband
             memory=ZoneActuationMemory(),
             elapsed_minutes=0.0,
-            guardrails=DEFAULT_GUARDRAILS,
+            guardrails=tight_guardrails,
         )
-        assert result.cooling_setpoint_c <= DEFAULT_GUARDRAILS.cooling_setpoint_max_c
+        assert result.cooling_setpoint_c == tight_guardrails.cooling_setpoint_max_c
+        assert result.heating_setpoint_c == pytest.approx(
+            tight_guardrails.cooling_setpoint_max_c - tight_guardrails.min_deadband_c
+        )
         assert (
-            result.cooling_setpoint_c - result.heating_setpoint_c
-            >= DEFAULT_GUARDRAILS.min_deadband_c
+            result.cooling_setpoint_c - result.heating_setpoint_c >= tight_guardrails.min_deadband_c
         )
 
 
