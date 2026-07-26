@@ -3,18 +3,19 @@
 Operational briefing for coding agents. Not documentation — `README.md` does that.
 If a line here doesn't change what you'd *do*, delete it.
 
-> **Build status:** Phase 8 of 9 complete (analysis: `runner.py` promotes the
-> EnergyPlusBackend + ReflexCallbacks + ReflexController wiring that previously only existed
-> in test helpers to production code for `baseline`/`rulebased`; `analysis/` computes energy
-> (kWh, electricity + gas) and ASHRAE 55 comfort metrics from the persisted per-run telemetry,
-> compares runs with a fairness check that refuses to compare mismatched weather/period/engine
-> fingerprints, and renders both a self-contained offline HTML report and an interactive
-> Streamlit dashboard from the same functions. `ecoloop run baseline --profile fast`,
-> `ecoloop compare --latest`, and `ecoloop report --latest` all run end to end against the
-> real engine: baseline totals 3241 kWh with a 4.7% comfort-violation rate, rulebased totals
-> 3435 kWh with a 0.1% rate — matching the numbers Phase 3 first observed. 347 tests).
-> The `agent` controller is deliberately out of scope for `run_controller` — it needs the
-> cognitive worker-thread wiring, still a distinct integration task for Phase 9.
+> **Build status:** Phase 9 of 9 complete — all nine phases built and verified against the
+> real EnergyPlus engine and a real running Ollama endpoint. This phase closed the last
+> tracked gap: `agent/worker.py`'s `CognitiveWorker` drives the cognitive tier on its own
+> thread, gated by simulated (not wall-clock) minutes elapsed, and `runner.py`'s
+> `run_agent_controller` wires it alongside EnergyPlus's blocking `run()` call — the
+> "distinct integration task" every prior phase's landmines pointed at. `ecoloop run agent
+> --profile demo`, a real Ollama `qwen2.5:7b-instruct` endpoint, and the real engine together
+> completed one real cognitive cycle (`get_zone_telemetry` → `get_comfort_status` → "hold"),
+> concurrently with the physics solver, with no crash. `--live` mode adds a Rich terminal
+> dashboard (`ui/live.py`) and demo-profile timestep pacing so a short recording has
+> something to show. Five docs (`docs/ARCHITECTURE.md`, `PROMPT_ENGINEERING.md`,
+> `FAILURE_MODES.md`, `RESULTS.md`, `DEMO_SCRIPT.md`) and `README.md` are now real and
+> current, not placeholders. 353 tests.
 > Sections marked ⏳ describe files that do not exist yet. Everything unmarked is real
 > and verified. This file is updated at the close of every phase.
 
@@ -62,11 +63,10 @@ energy by making occupants uncomfortable is an explicit failure, not a trade-off
 | Compare controllers' energy/comfort metrics | `ecoloop compare --latest` / `make compare` |
 | Build the offline HTML report | `ecoloop report --latest` / `make report` |
 | Launch the interactive dashboard | `ecoloop dashboard` / `make dashboard` (needs `pip install -e ".[dashboard]"`) |
+| Live TUI closed-loop demo (≤3 min, recordable) | `ecoloop run agent --profile demo --live` / `make demo` |
 
-⏳ `make prepare` and `make demo` are declared in the `Makefile` but their `ecoloop`
-subcommands (a standalone `prepare`, and the live-TUI-driven demo) land in Phase 9.
-`ecoloop run agent` (and therefore `make run-agent`) exits non-zero with an explanation
-rather than running — it needs the cognitive worker-thread wiring, Phase 9's job.
+⏳ `make prepare` is declared in the `Makefile` but has no standalone CLI subcommand behind
+it yet — `prepare_idf` is only ever called internally by `run`/`selfheal` today.
 
 **Profiles matter.** `--profile fast` is a 2-week run period and is the default for
 iteration. `--profile full` is annual and slow — do not run it to check a one-line change.
@@ -80,7 +80,7 @@ Two tiers, two threads, two shared objects. This is the whole design.
         MAIN THREAD (EnergyPlus owns it)          │       WORKER THREAD (daemon)
                                                   │
    EnergyPlus C++ solver                          │   Tier 2 — COGNITIVE
-     └── callbacks (synchronous!)                 │     cadence + event triggers
+     └── callbacks (synchronous!)                 │     cadence-gated
           └── Tier 1 — REFLEX                     │     aggregated telemetry only
               every timestep, <1 ms, no I/O       │     LLM via MCP tools
               read policy → clamp → actuate       │     emits ControlPolicy
@@ -297,19 +297,35 @@ Contracts live in `[tool.importlinter]` in `pyproject.toml`.
   EnergyPlus version reordering columns fails loudly instead of silently misreading one.
   Verified against a real run: sums to exactly 511.16 m², the published DOE Small Office
   prototype total.
-- **`run_controller()` only supports `baseline`/`rulebased`, and this is a scope boundary,
-  not a missing feature waiting to be filled in casually.** Both compute their policy
-  synchronously in the callback with no LLM involved, so nothing beyond
-  `EnergyPlusBackend` + `HandleRegistry` + `ReflexCallbacks` + `ReflexController` is needed.
-  `agent` reads from a `PolicyStore` that only a worker thread running the cognitive tier's
-  cadence loop can keep current, and wiring that thread alongside EnergyPlus's blocking,
-  main-thread-owning `run()` call is a distinct integration task — `ecoloop run agent`
-  exits non-zero with that explanation rather than a stack trace.
+- **`run_controller()` only supports `baseline`/`rulebased` — this is a deliberate,
+  permanent split, not a stale gap.** Both compute their policy synchronously in the
+  callback with no LLM involved, so nothing beyond `EnergyPlusBackend` + `HandleRegistry` +
+  `ReflexCallbacks` + `ReflexController` is needed. `agent` needs a live `TelemetryBus` +
+  `PolicyStore` + in-process MCP server + `CognitiveWorker` on its own thread, so it has its
+  own function, `run_agent_controller()`, in the same module — `ecoloop run agent` calls
+  that one, not `run_controller`, and both are real, working paths as of Phase 9.
 - **`compare_runs()` refuses to compare runs with different profiles, weather files, or
   EnergyPlus versions (`UnfairComparisonError`), and deliberately excludes `idf_path` from
   that check.** Every run overwrites the same `simulation.idf_prepared` destination, so the
   path is identical across controllers regardless of what was actually simulated — including
   it in the fairness check would validate nothing.
+- **`CognitiveWorker`'s cadence is gated on simulated minutes elapsed, not wall-clock
+  seconds.** EnergyPlus's speed relative to real time varies enormously — the fast profile's
+  two simulated weeks were observed completing in under two seconds of real time in this
+  repository, while a real cognitive cycle against `qwen2.5:7b-instruct` took on the order of
+  a minute end to end. Gating on wall-clock time would invoke the model far too often on a
+  fast run and not often enough on a slow one; gating on the simulation's own clock gives the
+  same cognitive cadence regardless of engine speed. Direct consequence: a short profile run
+  can legitimately complete zero or one real cognitive cycles before EnergyPlus finishes —
+  observed directly on the very first real end-to-end agent-controller run in this project
+  (see `docs/RESULTS.md`), and the reason `--live` mode's timestep pacing exists at all.
+- **An in-flight cognitive cycle deserves more than an arbitrary short stop timeout.** A
+  cycle can legitimately take up to `agent.max_tool_calls_per_invocation` LLM round trips,
+  each bounded by `llm.request_timeout_seconds` — `run_agent_controller` sizes
+  `CognitiveWorker.stop()`'s timeout from that product rather than a flat constant. An
+  earlier flat 30-second timeout logged "cognitive worker did not stop within timeout" on the
+  very first real end-to-end verification run against the real 7B model, because a real
+  multi-round-trip cycle legitimately took longer than 30 seconds.
 
 ## 8. Conventions
 
@@ -351,21 +367,30 @@ Contracts live in `[tool.importlinter]` in `pyproject.toml`.
   chain itself already exist inline in `tests/unit/test_guardrails.py` — see §7's landmines
   on the two real bugs they found before this ever ran against a controller.
 - Mark anything needing the real engine `@pytest.mark.energyplus`.
-- `tests/unit/test_runner.py` marks the actual-run cases `@pytest.mark.energyplus` (same
-  precedent as `test_agent_selfheal.py`: `run_controller` constructs `EnergyPlusBackend`
-  directly, so it can't be exercised against the fake without an injection seam nobody
-  asked for); the "agent controller is rejected" guard test needs no engine, since it
-  returns before touching one. `test_analysis_collect.py`, `test_analysis_metrics.py`,
-  `test_analysis_comfort.py`, `test_analysis_compare.py`, `test_analysis_charts.py`, and
-  `test_analysis_report.py` all run on hand-built `DataFrame`s/manifests with no engine at
-  all — `analysis/` only ever consumes already-persisted telemetry, never EnergyPlus
-  directly, so nothing under it needs the mark.
+- `tests/unit/test_runner.py` marks every actual-run case `@pytest.mark.energyplus` (same
+  precedent as `test_agent_selfheal.py`: `run_controller`/`run_agent_controller` construct
+  `EnergyPlusBackend` directly, so neither can be exercised against the fake without an
+  injection seam nobody asked for); the "agent controller string is rejected by
+  `run_controller`" guard test needs no engine, since it returns before touching one.
+  `TestRunAgentController` passes a `ScriptedLLM` rather than depending on a real Ollama
+  endpoint — a real cognitive cycle was observed taking on the order of minutes, far too
+  slow and non-deterministic for the regular suite — and asserts the run completes and
+  persists correctly rather than an exact cognitive-cycle count, which is inherently
+  wall-clock-dependent. `tests/unit/test_agent_worker.py` covers `CognitiveWorker`'s
+  cadence/threading logic against a fake state/server, no engine or Ollama needed.
+  `test_analysis_collect.py`, `test_analysis_metrics.py`, `test_analysis_comfort.py`,
+  `test_analysis_compare.py`, `test_analysis_charts.py`, and `test_analysis_report.py` all
+  run on hand-built `DataFrame`s/manifests with no engine at all — `analysis/` only ever
+  consumes already-persisted telemetry, never EnergyPlus directly, so nothing under it needs
+  the mark.
 - **Every bug fix gets a regression test.** No exceptions.
 - Coverage on `control/` and `bus/` is 96% (`pytest --cov=src/ecoloop/control --cov=src/ecoloop/bus`).
   `dashboard/` and `ui/` are excluded from coverage entirely (`pyproject.toml`'s
-  `[tool.coverage.run] omit`) — a Streamlit page isn't meaningfully unit-testable, so it was
-  smoke-tested by hand instead (`streamlit run` against real fast-profile run data, confirmed
-  serving HTTP 200 with no errors in the server log) rather than given hollow coverage.
+  `[tool.coverage.run] omit`) — neither a Streamlit page nor a Rich terminal renderer is
+  meaningfully unit-testable, so both were smoke-tested by hand against real run data instead
+  of given hollow coverage: the dashboard confirmed serving HTTP 200 with no errors in the
+  server log, and `ui/live.py` confirmed rendering 963 live frames across a real demo-profile
+  run with the simulated clock and cognitive-cycle counter both visibly updating.
 
 ## 10. Where things live
 
@@ -379,17 +404,21 @@ models/          baseline/ pristine IDF · prepared/ post-inject · generated/ p
 src/ecoloop/
   config.py      layered settings   errors.py  typed hierarchy   logging.py  structlog
   doctor.py      environment checks  cli.py    Typer entry point
-  runner.py      run_controller(): the full EnergyPlusBackend + ReflexCallbacks +
-                 ReflexController wiring, promoted from test-only to production, for
-                 baseline/rulebased — writes a RunManifest + telemetry.parquet per run
+  runner.py      run_controller()/run_agent_controller(): the full EnergyPlusBackend +
+                 ReflexCallbacks + ReflexController wiring, promoted from test-only to
+                 production for all three controllers — the agent path also starts
+                 CognitiveWorker before EnergyPlus's run() and stops it after. Writes a
+                 RunManifest + telemetry.parquet per run.
   simulation/    locate/energyplus/handles/callbacks/idf/prepare/errfile/weather/eio all work
   bus/           models/telemetry/policy all work; ⏳ events (arrives with P6's triggers)
   control/       base/guardrails/ecm/baseline/rulebased/reflex all work
-  agent/         context/prompts/llm/orchestrator/selfheal all work
+  agent/         context/prompts/llm/orchestrator/selfheal/worker all work
   mcp/           server/tools_observe/tools_actuate/tools_introspect/sandbox/trace all work
   analysis/      collect/metrics/comfort/compare/charts/report all work
   dashboard/     app.py — Streamlit dashboard, reuses analysis/ directly (ecoloop dashboard)
+  ui/            live.py — Rich terminal dashboard for `ecoloop run agent --live`
 scripts/         generate_signals.py · check_agent_commands.py
+docs/            ARCHITECTURE, PROMPT_ENGINEERING, FAILURE_MODES, RESULTS, DEMO_SCRIPT
 ```
 
 ## 11. How to verify a change
@@ -423,3 +452,12 @@ agent file *in the same commit* — a stale agent file is a bug, and CI checks t
 - **Metrics are computed twice, from meters and from variables.** ⏳ They are not redundant —
   meters are cumulative per reporting period, variables are instantaneous. Cross-checking
   them is how a unit error gets caught.
+- **A real `ecoloop run agent` came back with numbers *identical* to `rulebased`'s — this is
+  not a bug, and not the agent silently falling back to rule-based logic in code.** It is the
+  documented degradation ladder (§7) working exactly as designed: the single real cognitive
+  cycle that ran during that verification read the telemetry, reasoned about it, and
+  correctly decided to hold rather than actuate — no policy was ever published, so the
+  reflex tier ran on its rule-based fallback for the entire run, same as if `agent` had never
+  been invoked at all. See `docs/RESULTS.md` for the full, honest account, including why this
+  is evidence the architecture works end to end and *not* evidence of a measured energy or
+  comfort advantage for the agent controller.

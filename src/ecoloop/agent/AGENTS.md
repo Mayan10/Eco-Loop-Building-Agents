@@ -12,6 +12,7 @@ only matters *here*. ⏳ marks files that do not exist yet.
 | `prompts.py` | Renders the versioned Jinja2 template in `config/prompts/`; version goes in the trace. |
 | `context.py` | Ten named context blocks, priority-ordered, budget-fitted by dropping from the tail. |
 | `selfheal.py` | `.err` classifier → bounded patch/rerun loop; `ecoloop selfheal --idf <path>` drives it. |
+| `worker.py` | `CognitiveWorker` — drives `run_cycle()` on its own thread, gated by simulated minutes elapsed. |
 
 **Note on `trace.py`:** it lives in `mcp/trace.py`, not here. Every MCP tool call needs
 tracing regardless of who calls it (a human via Claude Desktop, this layer's tool-calling
@@ -28,15 +29,24 @@ uncomfortable zone (PMV 1.1) — read that state, recognised the comfort violati
 `propose_policy` with a real, correctly-reasoned justification. This is not a claim from the
 Ollama docs; it is a run that happened in this repository.
 
+**`CognitiveWorker` verified end to end against the real engine and a real running
+`qwen2.5:7b-instruct`, on its own thread, concurrently with EnergyPlus on the main thread.**
+`ecoloop run agent --profile demo` completed a real cognitive cycle — `get_zone_telemetry`
+then `get_comfort_status`, then a "hold" decision — while the physics solver ran on a separate
+thread with no crash, no segfault, and no interference. See `runner.py`'s `run_agent_controller`
+and `docs/RESULTS.md` for the full account, including why that run's numbers came out
+identical to `rulebased`'s (the model correctly chose not to actuate).
+
 ## The boundary this layer must not cross
 
-This layer runs off the main thread (a background worker, once a future CLI `run` subcommand
-wires it to a live simulation — see the landmine below), never the main thread. It may
-not import `simulation/` internals and may not call the EnergyPlus API directly —
-`import-linter` enforces the first, and the second segfaults C++ with no traceback if you get
-it wrong. Everything in and out goes through `bus/`: read `TelemetryBus`, write `PolicyStore`.
-Importing `mcp/` is fine and expected — the orchestrator is an MCP *client* of the in-process
-server, calling `server.call_tool()` the same way an external client would.
+This layer runs on its own worker thread (`worker.py`'s `CognitiveWorker`, started before
+EnergyPlus's blocking `run()` call and stopped after — see `runner.py`), never the main
+thread. It may not import `simulation/` internals and may not call the EnergyPlus API
+directly — `import-linter` enforces the first, and the second segfaults C++ with no
+traceback if you get it wrong. Everything in and out goes through `bus/`: read
+`TelemetryBus`, write `PolicyStore`. Importing `mcp/` is fine and expected — the orchestrator
+is an MCP *client* of the in-process server, calling `server.call_tool()` the same way an
+external client would.
 
 The LLM's *only* actuation surface is `propose_policy` / `request_zone_setpoint` in `mcp/`.
 
@@ -87,21 +97,37 @@ is indistinguishable from a fresh call in the trace apart from `ChatResponse.cac
 
 ## Cost control
 
-An annual run is 52,560 timesteps; the model is invoked on a cadence (`agent.cadence_minutes`)
-plus event triggers (not yet wired to the orchestrator — see the landmine below), with
-`agent.min_invocation_gap_minutes` as a floor and `agent.max_tool_calls_per_invocation` as a
-ceiling on one cycle's tool calls. Context is budgeted to `agent.context.max_input_tokens` by
-dropping whole blocks in `block_priority` order — never by truncating mid-block, which would
-hand the model a confidently-wrong half-sentence instead of a visible omission.
+An annual run is 52,560 timesteps; `CognitiveWorker` invokes the model on a cadence
+(`agent.cadence_minutes`, measured in **simulated** minutes elapsed since the last
+invocation — see the landmine below) plus event triggers (validated config, not yet wired to
+the orchestrator), with `agent.min_invocation_gap_minutes` as a floor (currently redundant
+with cadence alone, since only cadence gates invocation until triggers exist) and
+`agent.max_tool_calls_per_invocation` as a ceiling on one cycle's tool calls. Context is
+budgeted to `agent.context.max_input_tokens` by dropping whole blocks in `block_priority`
+order — never by truncating mid-block, which would hand the model a confidently-wrong
+half-sentence instead of a visible omission.
 
 ## Landmines specific to this layer
 
-- **The CLI's `run` subcommand does not exist yet.** Every module here is built,
-  tested, and proven against a real LLM via a hand-constructed `ServerState` — the
-  worker-thread wiring (its own asyncio loop running `run_cycle()` on a cadence, alongside
-  EnergyPlus on the main thread, with cadence/trigger scheduling actually implemented) is a
-  distinct integration task. `agent.triggers` (pmv_excursion, demand_approach, etc.) are
-  validated config with no code reading them yet, for the same reason.
+- **`CognitiveWorker`'s cadence is gated on simulated minutes elapsed, not wall-clock
+  seconds — and this matters more than it sounds like it should.** EnergyPlus's speed
+  relative to real time varies enormously: the fast profile's two simulated weeks were
+  observed completing in under two seconds of real time in this repository, while a real
+  cognitive cycle against `qwen2.5:7b-instruct` took on the order of a minute end to end.
+  Gating on wall-clock time would invoke the model far too often on a fast run and not
+  often enough on a slow one; gating on `TelemetrySample.clock` (compared against the
+  worker's own `_last_invocation_clock`) gives the same cognitive cadence regardless of how
+  fast the physics solver happens to run. A direct consequence: a short profile run can
+  legitimately complete zero or one real cognitive cycles before EnergyPlus finishes — see
+  `--live` mode and `docs/RESULTS.md` for what that looked like in practice.
+- **`worker.stop()`'s timeout must be sized from the LLM's own worst case, not an arbitrary
+  constant.** An in-flight cognitive cycle can legitimately take up to
+  `agent.max_tool_calls_per_invocation * llm.request_timeout_seconds` (each tool-calling
+  round trip bounded by the request timeout). `runner.py`'s `run_agent_controller` computes
+  the stop timeout from exactly that product; an earlier attempt with a flat 30-second
+  timeout logged "cognitive worker did not stop within timeout" against the real 7B model
+  on the very first real end-to-end verification run, because a real multi-round-trip cycle
+  legitimately took longer than that.
 - **Ollama's tool-calling response shape is `message.tool_calls[].function.{name,arguments}`,
   and `id` is present but not always meaningful** — `llm.py`'s parser treats it as optional
   (`tc.get("id", "")`) rather than assuming every implementation populates it usefully.
@@ -134,6 +160,16 @@ the failing variants, asserts the simulation still completes) and ⏳ `tests/pro
 (arbitrary hypothesis-generated tool-call arguments against the guardrail chain) are still
 open — self-healing turned out not to need either, since the fault it recovers from is a
 deterministic input error caught at parse time, not a mid-run LLM failure.
+
+`tests/unit/test_agent_worker.py` covers `CognitiveWorker` against a fake state/server (no
+real EnergyPlus) and a `ScriptedLLM` (no real Ollama) — the cadence/threading logic itself,
+the same fakes-based pattern `test_agent_orchestrator.py` uses for the orchestrator it
+wraps. `tests/unit/test_runner.py::TestRunAgentController` covers the full production wiring
+(`@pytest.mark.energyplus`, `ScriptedLLM`) — how many cognitive cycles actually complete in
+a short real run is inherently wall-clock-dependent (the worker's poll loop races against
+EnergyPlus finishing), so that test asserts the run completes and persists correctly, not an
+exact cycle count. The real end-to-end path (real engine, real Ollama, both threads actually
+running concurrently) was additionally verified once by hand — see the landmine above.
 
 ```bash
 .venv/bin/pytest tests/unit -q -k "agent_ or mcp_"
