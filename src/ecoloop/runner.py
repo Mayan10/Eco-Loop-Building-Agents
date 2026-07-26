@@ -26,6 +26,7 @@ architecture allows to cross the boundary — a live
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, get_args
@@ -54,6 +55,7 @@ from ecoloop.simulation.idf import set_idd
 from ecoloop.simulation.locate import EnergyPlusInstall, discover_energyplus
 from ecoloop.simulation.prepare import prepare_idf
 from ecoloop.simulation.weather import load_epw
+from ecoloop.ui.live import LiveDashboard
 
 __all__ = [
     "RunManifest",
@@ -214,6 +216,7 @@ def run_agent_controller(
     weather_path: Path | None = None,
     output_dir: Path | None = None,
     llm: LLMClient | None = None,
+    live: bool = False,
 ) -> RunManifest:
     """Run the agent controller, with the cognitive tier on its own worker thread.
 
@@ -231,6 +234,10 @@ def run_agent_controller(
         llm: Override for the LLM client — a real
             :class:`~ecoloop.agent.llm.OllamaClient` against ``settings.llm``
             if omitted; tests pass a scripted double.
+        live: Render a Rich terminal dashboard and pace timesteps by
+            ``agent.live_pacing_seconds_per_timestep`` (zero by default, so
+            passing ``live=True`` without a profile that sets it non-zero
+            renders a dashboard with nothing new to show between frames).
 
     Returns:
         A manifest describing the completed run, in the same shape
@@ -287,14 +294,18 @@ def run_agent_controller(
         settings.llm, cache_dir=settings.resolve(settings.llm.cache.dir)
     )
     worker = CognitiveWorker(state, server, llm_client, settings.agent)
+    dashboard = LiveDashboard(state, worker, title=settings.analysis.report.title) if live else None
 
     recorder = TelemetryRecorder()
     registry = HandleRegistry(zone_map)
     backend = EnergyPlusBackend(install)
+    pacing_seconds = settings.agent.live_pacing_seconds_per_timestep if live else 0.0
 
     def on_sample(sample: TelemetrySample) -> None:
         recorder.record(sample)
         telemetry_bus.put_nowait(sample)
+        if pacing_seconds:
+            time.sleep(pacing_seconds)
 
     callbacks = ReflexCallbacks(backend, zone_map, registry, on_sample, reflex_controller=reflex)
 
@@ -302,6 +313,8 @@ def run_agent_controller(
     registry.request_all(backend)
     callbacks.register()
     worker.start()
+    if dashboard is not None:
+        dashboard.start()
     _logger.info(
         "starting run",
         controller="agent",
@@ -323,6 +336,8 @@ def run_agent_controller(
         )
     finally:
         worker.stop(timeout_seconds=worker_stop_timeout)
+        if dashboard is not None:
+            dashboard.stop()
     ended_at = datetime.now(UTC)
     _logger.info("cognitive worker stopped", cycles_run=worker.cycles_run)
 

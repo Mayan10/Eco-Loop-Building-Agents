@@ -242,6 +242,10 @@ def run(
         Path | None,
         typer.Option("--output-dir", help="Override the default results/runs/... path."),
     ] = None,
+    live: Annotated[
+        bool,
+        typer.Option("--live", help="Agent only: Rich terminal dashboard + demo-profile pacing."),
+    ] = False,
 ) -> None:
     """Run a controller against the real EnergyPlus engine end to end.
 
@@ -252,8 +256,12 @@ def run(
     end to end (EnergyPlus itself is routinely far faster), so a short
     profile can legitimately complete with few or zero cycles; that is a
     degraded success (AGENTS.md §"Degradation is the normal path"), not a
-    failure. Every mode persists the full-run telemetry history plus a
-    manifest for ``compare``/``report`` to consume. ``all`` runs every
+    failure. ``--live`` (agent only) renders a Rich terminal dashboard and
+    paces timesteps by ``agent.live_pacing_seconds_per_timestep``, so the run
+    has something to show instead of finishing before the first LLM round
+    trip returns — the ``demo`` profile sets that pacing; other profiles
+    default it to zero. Every mode persists the full-run telemetry history
+    plus a manifest for ``compare``/``report`` to consume. ``all`` runs every
     controller in sequence.
     """
     if controller not in _RUN_CONTROLLER_CHOICES:
@@ -262,6 +270,9 @@ def run(
             f"{', '.join(_RUN_CONTROLLER_CHOICES)}."
         )
         raise typer.Exit(code=2)
+    if live and controller not in ("agent", "all"):
+        console.print("[yellow]![/yellow] --live only affects the agent controller; ignoring it.")
+        live = False
 
     settings = _load(config, profile)
     configure_logging(settings.logging)
@@ -274,7 +285,7 @@ def run(
         try:
             if name == "agent":
                 manifest = run_agent_controller(
-                    settings, profile=chosen_profile, output_dir=output_dir
+                    settings, profile=chosen_profile, output_dir=output_dir, live=live
                 )
             else:
                 manifest = run_controller(

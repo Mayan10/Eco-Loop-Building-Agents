@@ -193,6 +193,12 @@ agent:
   # applied and the no-progress condition is logged.
   max_tool_calls_per_invocation: 8
 
+  # Deliberate per-timestep delay, added only in `--live` mode, so a human
+  # watching the Rich dashboard sees the run progress rather than it
+  # finishing before the cognitive worker's first LLM round trip returns.
+  # Zero here: every non-live run uses EnergyPlus's own speed.
+  live_pacing_seconds_per_timestep: 0.0
+
   triggers:
     pmv_excursion: true
     zone_temp_limit: true

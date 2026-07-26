@@ -20,6 +20,15 @@ agent:
   # activity panel busy on camera rather than idle between long gaps.
   cadence_minutes: 30
   min_invocation_gap_minutes: 5
+  # EnergyPlus alone resolves all 432 of this profile's timesteps in well
+  # under a second - nowhere near long enough for even one real LLM round
+  # trip (observed taking on the order of a minute against qwen2.5:7b-instruct
+  # in this repository) to land while the run is still going. This spends
+  # ~43s of wall clock on physics pacing so `--live` has something to show
+  # before the recording budget runs out; it does not, by itself, guarantee
+  # "several" cycles land within 3 minutes with the default (larger) model -
+  # see DEMO_SCRIPT.md for the recording-time tradeoffs.
+  live_pacing_seconds_per_timestep: 0.1
 
 llm:
   cache:

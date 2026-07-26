@@ -286,6 +286,12 @@ class AgentSettings(_Base):
     triggers: TriggerSettings = Field(default_factory=TriggerSettings)
     context: ContextSettings
     selfheal: SelfHealSettings = Field(default_factory=SelfHealSettings)
+    live_pacing_seconds_per_timestep: float = Field(default=0.0, ge=0.0)
+    """Deliberate delay added per timestep only in ``--live`` mode, so a human
+    watching the Rich dashboard sees the simulation progress rather than it
+    finishing before the cognitive worker's first LLM round trip returns.
+    Zero (the default) for every non-live run — EnergyPlus runs as fast as
+    the engine allows."""
 
 
 class RetrySettings(_Base):
