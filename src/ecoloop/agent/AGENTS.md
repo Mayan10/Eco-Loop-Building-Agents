@@ -11,7 +11,7 @@ only matters *here*. ⏳ marks files that do not exist yet.
 | `llm.py` | Ollama chat client: retry, circuit breaker, prompt-hash cache, the `LLMClient` protocol. |
 | `prompts.py` | Renders the versioned Jinja2 template in `config/prompts/`; version goes in the trace. |
 | `context.py` | Ten named context blocks, priority-ordered, budget-fitted by dropping from the tail. |
-| ⏳ `selfheal.py` | `.err` classifier → bounded patch/rerun loop. Arrives Phase 7. |
+| `selfheal.py` | `.err` classifier → bounded patch/rerun loop; `ecoloop selfheal --idf <path>` drives it. |
 
 **Note on `trace.py`:** it lives in `mcp/trace.py`, not here. Every MCP tool call needs
 tracing regardless of who calls it (a human via Claude Desktop, this layer's tool-calling
@@ -110,6 +110,15 @@ hand the model a confidently-wrong half-sentence instead of a visible omission.
   this is what lets `tests/fakes/fake_llm.py`'s scripted doubles stand in for a real endpoint
   without inheriting from it, the same seam `SimulationBackend` provides for the fake
   EnergyPlus double.
+- **`selfheal.py`'s classifier never tries to extract an object's *name* from EnergyPlus's
+  error text.** The folded "item not found" message has no delimiter between a free-form
+  object name and a free-form field label — both are words separated by spaces — so any
+  open-ended capture group placed next to the other reliably swallows it. The exact broken
+  object is instead found by searching the IDF for the instance whose field currently equals
+  the diagnosed bad value, and the field label itself is matched against a closed
+  alternation of known literals, not an open character class. This was found by running the
+  real `broken_thermostat.idf` fixture against the real engine twice — once per group that
+  turned out to have the same bug.
 
 ## Testing this layer
 
@@ -117,9 +126,14 @@ hand the model a confidently-wrong half-sentence instead of a visible omission.
 `TimeoutLLM`, and `MalformedToolCallLLM` (each always raises the failure mode it's named
 for) — anything satisfying `LLMClient` works. `tests/unit/test_agent_llm.py` exercises the
 real HTTP-layer retry/circuit-breaker/cache logic against `httpx.MockTransport`, so none of
-it needs Ollama running. ⏳ `tests/chaos/` (kills the LLM mid-run via the failing variants,
-asserts the simulation still completes) and ⏳ `tests/property/` (arbitrary hypothesis-generated
-tool-call arguments against the guardrail chain) arrive in Phase 7 alongside self-healing.
+it needs Ollama running. `tests/unit/test_agent_selfheal.py::TestDiagnose` covers the
+classifier regex against a hand-built `ErrFileSummary` with no engine needed;
+`TestRepairAndRunWithSelfHealing` is `@pytest.mark.energyplus` and runs the real
+`models/faults/broken_thermostat.idf` end to end. ⏳ `tests/chaos/` (kills the LLM mid-run via
+the failing variants, asserts the simulation still completes) and ⏳ `tests/property/`
+(arbitrary hypothesis-generated tool-call arguments against the guardrail chain) are still
+open — self-healing turned out not to need either, since the fault it recovers from is a
+deterministic input error caught at parse time, not a mid-run LLM failure.
 
 ```bash
 .venv/bin/pytest tests/unit -q -k "agent_ or mcp_"

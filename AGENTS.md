@@ -3,11 +3,11 @@
 Operational briefing for coding agents. Not documentation — `README.md` does that.
 If a line here doesn't change what you'd *do*, delete it.
 
-> **Build status:** Phase 6 of 9 complete (cognitive layer: context budgeting, the versioned
-> system prompt, the Ollama client with retry/circuit-breaker/cache, and the tool-calling
-> orchestrator — verified end to end against a real running Ollama `qwen2.5:3b-instruct`,
-> which correctly read a zone's telemetry, recognised a PMV comfort violation, and proposed a
-> setpoint change with real reasoning. 301 tests, 92% coverage on `agent/`).
+> **Build status:** Phase 7 of 9 complete (self-healing: `.err` classifier, bounded
+> patch/rerun loop, and `models/faults/broken_thermostat.idf` — a fixture verified against
+> the *real* EnergyPlus engine, not guessed at, whose exact Severe-record text the classifier
+> was written against. `ecoloop selfheal --idf <path>` runs it end to end: diagnose, patch,
+> rerun, succeed on attempt 2. 310 tests).
 > Sections marked ⏳ describe files that do not exist yet. Everything unmarked is real
 > and verified. This file is updated at the close of every phase.
 
@@ -49,10 +49,12 @@ energy by making occupants uncomfortable is an explicit failure, not a trade-off
 | Everything CI runs | `make check` |
 | Regenerate grid signals | `.venv/bin/python scripts/generate_signals.py` |
 | Verify agent files aren't stale | `.venv/bin/python scripts/check_agent_commands.py` |
+| Diagnose and patch a broken IDF | `ecoloop selfheal --idf <path>` / `make demo-selfheal` |
+| Serve the live building over MCP | `ecoloop mcp serve` / `make mcp` |
 
 ⏳ `make prepare`, `make run-baseline`, `make run-rulebased`, `make run-agent`, `make run-all`,
-`make compare`, `make report`, `make dashboard`, `make mcp`, `make demo`, `make demo-selfheal`
-are declared in the `Makefile` but their `ecoloop` subcommands land in Phases 2–8.
+`make compare`, `make report`, `make dashboard`, `make demo`
+are declared in the `Makefile` but their `ecoloop` subcommands land in Phases 2–9.
 
 **Profiles matter.** `--profile fast` is a 2-week run period and is the default for
 iteration. `--profile full` is annual and slow — do not run it to check a one-line change.
@@ -244,6 +246,19 @@ Contracts live in `[tool.importlinter]` in `pyproject.toml`.
   but it means the rate cap alone does not predict convergence time; the two settings
   together do. Found via the fake-backend end-to-end test expecting full convergence within
   a 6-hour unoccupied window and getting 17.35 °C instead of 15.6 °C.
+- **EnergyPlus's folded "item not found" error text has no delimiter between a free-form
+  object name and a free-form field label — both are just words separated by spaces.**
+  `agent/selfheal.py`'s classifier regex originally tried to capture the object name with a
+  non-greedy group and immediately mis-split it (`"CORE_ZN"` instead of the real
+  `"Core_ZN DualSPSched"`), because the adjacent field-label group's open character class
+  absorbed the rest. Fixing the object-name group only moved the same ambiguity into the
+  field group next. The actual fix drops object-name extraction entirely — the exact broken
+  object is found by searching the IDF for the one instance whose field currently *equals*
+  the bad value, which is unambiguous — and constrains the field group to a closed
+  alternation of known field-label literals rather than any open character class. An open
+  class for either free-form span reintroduces the same bug one level down. Found by
+  running the real `broken_thermostat.idf` fixture against the real engine and reading its
+  actual Severe-record text, not by guessing at EnergyPlus's format.
 
 ## 8. Conventions
 
@@ -273,12 +288,17 @@ Contracts live in `[tool.importlinter]` in `pyproject.toml`.
   `TimeoutLLM` / `MalformedToolCallLLM` (each always raises the failure mode it's named for)
   — anything satisfying `OllamaClient`'s duck-typed `chat()` works, since
   `CognitiveOrchestrator` only ever calls that one method.
+- `tests/unit/test_agent_selfheal.py` covers `selfheal.py`: `diagnose()` against a
+  hand-built `ErrFileSummary` needs no engine at all, but `repair()` and
+  `run_with_self_healing()` are marked `@pytest.mark.energyplus` — they run the real
+  `models/faults/broken_thermostat.idf` end to end and assert it succeeds on attempt 2.
 - ⏳ `tests/property/` (dedicated hypothesis suite over *arbitrary* LLM output) and
   `tests/chaos/` (kills the LLM mid-run via `fake_llm.py`'s failing variants, asserts the
-  simulation still completes) arrive in Phase 7 alongside self-healing, which is what chaos
-  scenarios are really testing the recovery path of. Property tests on the guardrail chain
-  itself already exist inline in `tests/unit/test_guardrails.py` — see §7's landmines on the
-  two real bugs they found before this ever ran against a controller.
+  simulation still completes) are still open — self-healing turned out to need its own
+  targeted engine-backed tests rather than a chaos harness, since the fault it recovers from
+  is a deterministic input error, not a mid-run LLM failure. Property tests on the guardrail
+  chain itself already exist inline in `tests/unit/test_guardrails.py` — see §7's landmines
+  on the two real bugs they found before this ever ran against a controller.
 - Mark anything needing the real engine `@pytest.mark.energyplus`.
 - **Every bug fix gets a regression test.** No exceptions.
 - Coverage on `control/` and `bus/` is 96% (`pytest --cov=src/ecoloop/control --cov=src/ecoloop/bus`).
@@ -290,7 +310,7 @@ config/          default.yaml is the single source of truth; profiles/ overlay i
   prompts/       ⏳ versioned Jinja2 templates (version recorded in the trace)
   signals/       synthetic carbon + tariff CSVs (regenerate: scripts/generate_signals.py)
 models/          baseline/ pristine IDF · prepared/ post-inject · generated/ per-run
-  faults/        ⏳ deliberately broken IDFs for the self-heal demo — see §12
+  faults/        deliberately broken IDFs for the self-heal demo — see §12
   weather/       EPW files (gitignored; copied from the EnergyPlus install)
 src/ecoloop/
   config.py      layered settings   errors.py  typed hierarchy   logging.py  structlog
@@ -298,7 +318,7 @@ src/ecoloop/
   simulation/    locate/energyplus/handles/callbacks/idf/prepare/errfile/weather all work
   bus/           models/telemetry/policy all work; ⏳ events (arrives with P6's triggers)
   control/       base/guardrails/ecm/baseline/rulebased/reflex all work
-  agent/         context/prompts/llm/orchestrator all work; ⏳ self-heal (Phase 7)
+  agent/         context/prompts/llm/orchestrator/selfheal all work
   mcp/           server/tools_observe/tools_actuate/tools_introspect/sandbox/trace all work
   analysis/      ⏳ metrics, comfort, compare, charts, static HTML report
 scripts/         generate_signals.py · check_agent_commands.py
@@ -316,8 +336,12 @@ agent file *in the same commit* — a stale agent file is a bug, and CI checks t
 
 ## 12. Things that look wrong but are correct
 
-- **`models/faults/` contains deliberately broken IDFs.** ⏳ They are fixtures for the
-  self-healing demo. Do not fix them.
+- **`models/faults/` contains deliberately broken IDFs.** They are fixtures for the
+  self-healing demo (`ecoloop selfheal --idf models/faults/broken_thermostat.idf`). Do not
+  fix them by hand — the point is that `agent/selfheal.py` fixes them at run time.
+  `broken_thermostat.idf` was built by running it against the real engine *first* to capture
+  EnergyPlus's exact Severe-record text, then writing the classifier regex against that
+  captured text — not the other way around.
 - **`get_weather_forecast` reads ahead in the EPW.** This is a deliberate *forecast oracle*,
   disclosed as such in `docs/ARCHITECTURE.md`. It is not a data leak bug.
 - **The telemetry queue drops the oldest sample when full, silently by design.** Blocking
