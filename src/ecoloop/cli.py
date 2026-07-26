@@ -21,6 +21,7 @@ from rich.text import Text
 from ecoloop import __version__
 from ecoloop.agent.selfheal import run_with_self_healing
 from ecoloop.analysis.compare import compare_runs, find_latest_runs
+from ecoloop.analysis.report import build_report
 from ecoloop.config import EcoLoopSettings, load_settings
 from ecoloop.doctor import CheckResult, Status, run_checks
 from ecoloop.errors import EcoLoopError
@@ -384,6 +385,45 @@ def compare(
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(result.model_dump_json(indent=2) + "\n", encoding="utf-8")
         console.print(f"Wrote comparison to {output}")
+
+
+# --------------------------------------------------------------------------- #
+# report
+# --------------------------------------------------------------------------- #
+@app.command()
+def report(
+    config: ConfigOption = None,
+    profile: ProfileOption = None,
+    latest: Annotated[
+        bool, typer.Option("--latest", help="Report on each controller's most recent run.")
+    ] = True,
+    runs: Annotated[
+        list[Path] | None,
+        typer.Option("--run", help="Explicit run directory; repeatable. Overrides --latest."),
+    ] = None,
+    output: Annotated[Path, typer.Option("--output", help="Destination HTML file.")] = Path(
+        "results/report.html"
+    ),
+) -> None:
+    """Build a single, self-contained offline HTML comparison report.
+
+    Opens with no server and no internet connection: Plotly's JS is embedded
+    directly in the file when ``analysis.report.embed_plotly_js`` is set
+    (the default). Refuses, like `compare`, if the runs being reported on
+    don't share the same profile, weather file, and EnergyPlus version.
+    """
+    settings = _load(config, profile)
+    configure_logging(settings.logging)
+    run_dirs = _resolve_run_dirs(settings, latest, runs)
+
+    try:
+        comparison = compare_runs(run_dirs, settings)
+    except EcoLoopError as exc:
+        console.print(f"[red]✗[/red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    destination = build_report(comparison, settings, output)
+    console.print(f"[green]✓[/green] Wrote report to {destination}")
 
 
 # --------------------------------------------------------------------------- #
