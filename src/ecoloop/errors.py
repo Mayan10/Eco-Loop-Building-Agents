@@ -54,6 +54,7 @@ class EcoLoopError(Exception):
     """
 
     def __init__(self, message: str, **context: Any) -> None:
+        """Store the message and any structured context fields."""
         super().__init__(message)
         self.message = message
         self.context: dict[str, Any] = context
@@ -149,7 +150,7 @@ class PolicyError(EcoLoopError):
     """Base class for control-policy validity and lifetime failures."""
 
 
-class GuardrailViolation(PolicyError):
+class GuardrailViolation(PolicyError):  # noqa: N818 - name fixed by the design brief
     """A proposed policy value violated a hard safety guardrail.
 
     Guardrails normally *clamp* rather than raise — clamping keeps the loop
