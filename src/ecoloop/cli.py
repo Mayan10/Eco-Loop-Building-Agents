@@ -10,7 +10,7 @@ missing and how to fix it.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import typer
 from rich.console import Console
@@ -26,6 +26,7 @@ from ecoloop.errors import EcoLoopError
 from ecoloop.logging import configure_logging
 from ecoloop.mcp.server import build_server
 from ecoloop.mcp.state import create_standalone_state
+from ecoloop.runner import SynchronousController, run_controller
 from ecoloop.simulation.prepare import prepare_idf
 
 app = typer.Typer(
@@ -219,6 +220,82 @@ def mcp_serve(
     server = build_server(state)
     chosen = transport or settings.mcp.transport
     server.run(transport=_FASTMCP_TRANSPORT.get(chosen, "stdio"))  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- #
+# run
+# --------------------------------------------------------------------------- #
+_RUN_CONTROLLER_CHOICES = ("baseline", "rulebased", "agent", "all")
+
+
+@app.command()
+def run(
+    controller: Annotated[str, typer.Argument(help="baseline, rulebased, agent, or all.")],
+    config: ConfigOption = None,
+    profile: ProfileOption = None,
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", help="Override the default results/runs/... path."),
+    ] = None,
+) -> None:
+    """Run a controller against the real EnergyPlus engine end to end.
+
+    ``baseline`` and ``rulebased`` compute their policy synchronously with no
+    LLM involved, so this runs them directly and persists the full-run
+    telemetry history plus a manifest for ``compare``/``report`` to consume.
+    ``agent`` needs the cognitive worker-thread wiring, a distinct
+    integration task not yet built (see ``agent/AGENTS.md``) — requesting it
+    prints that explanation rather than a bare stack trace. ``all`` runs
+    every implemented controller in sequence.
+    """
+    if controller not in _RUN_CONTROLLER_CHOICES:
+        console.print(
+            f"[red]Unknown controller {controller!r}.[/red] Choose one of: "
+            f"{', '.join(_RUN_CONTROLLER_CHOICES)}."
+        )
+        raise typer.Exit(code=2)
+
+    settings = _load(config, profile)
+    configure_logging(settings.logging)
+    chosen_profile = profile or "fast"
+
+    to_run: list[str] = ["baseline", "rulebased", "agent"] if controller == "all" else [controller]
+    exit_code = 0
+    for name in to_run:
+        if name == "agent":
+            console.print(
+                "[yellow]![/yellow] 'agent' needs the cognitive worker-thread wiring, "
+                "which is not yet built (see agent/AGENTS.md)"
+                + (" — skipping." if controller == "all" else ".")
+            )
+            if controller != "all":
+                exit_code = 1
+            continue
+        console.print(f"Running [bold]{name}[/bold] (profile: {chosen_profile})…")
+        try:
+            manifest = run_controller(
+                settings,
+                cast("SynchronousController", name),
+                profile=chosen_profile,
+                output_dir=output_dir,
+            )
+        except EcoLoopError as exc:
+            console.print(f"[red]✗[/red] {name} failed to start: {exc}")
+            exit_code = 1
+            continue
+        if manifest.succeeded:
+            console.print(
+                f"[green]✓[/green] {name} succeeded — {manifest.timesteps_published} "
+                f"timesteps, telemetry at {manifest.telemetry_path}"
+            )
+        else:
+            console.print(
+                f"[red]✗[/red] {name} did not complete successfully — see {manifest.output_dir}"
+            )
+            exit_code = 1
+
+    if exit_code:
+        raise typer.Exit(code=exit_code)
 
 
 # --------------------------------------------------------------------------- #
