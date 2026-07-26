@@ -19,12 +19,14 @@ from rich.table import Table
 from rich.text import Text
 
 from ecoloop import __version__
+from ecoloop.agent.selfheal import run_with_self_healing
 from ecoloop.config import EcoLoopSettings, load_settings
 from ecoloop.doctor import CheckResult, Status, run_checks
 from ecoloop.errors import EcoLoopError
 from ecoloop.logging import configure_logging
 from ecoloop.mcp.server import build_server
 from ecoloop.mcp.state import create_standalone_state
+from ecoloop.simulation.prepare import prepare_idf
 
 app = typer.Typer(
     name="ecoloop",
@@ -217,6 +219,50 @@ def mcp_serve(
     server = build_server(state)
     chosen = transport or settings.mcp.transport
     server.run(transport=_FASTMCP_TRANSPORT.get(chosen, "stdio"))  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------------- #
+# selfheal
+# --------------------------------------------------------------------------- #
+@app.command()
+def selfheal(
+    idf: Annotated[
+        Path, typer.Option("--idf", help="A (possibly deliberately broken) IDF to run.")
+    ],
+    config: ConfigOption = None,
+    profile: ProfileOption = None,
+) -> None:
+    """Run an IDF, diagnosing and patching a recognised fatal fault on failure.
+
+    Deliberately narrow: only the fault class the ``models/faults/`` demo
+    fixtures inject (an invalid schedule-name reference) is recognised — see
+    ``agent/selfheal.py`` for why that scope is honest rather than limiting.
+    Bounded by ``agent.selfheal.max_retries``; never loops forever.
+    """
+    settings = _load(config, profile)
+    configure_logging(settings.logging)
+
+    console.print(f"Preparing [bold]{idf}[/bold] (weather run periods, comfort instrumentation)…")
+    prepared = prepare_idf(settings, idf_path=idf)
+    weather_path = settings.resolve(settings.simulation.weather)
+    output_dir = settings.project.results_dir / "selfheal" / idf.stem
+
+    result = run_with_self_healing(
+        settings, idf_path=prepared, weather_path=weather_path, output_dir=output_dir
+    )
+
+    for i, diagnosis in enumerate(result.diagnoses, start=1):
+        console.print(
+            f"  attempt {i}: diagnosed [yellow]{diagnosis.fault_class}[/yellow] — "
+            f"{diagnosis.object_type} / {diagnosis.field} = {diagnosis.bad_value!r}"
+        )
+
+    if result.succeeded:
+        console.print(f"[green]✓[/green] {result.message}")
+        console.print(f"  final IDF: {result.final_idf_path}")
+    else:
+        console.print(f"[red]✗[/red] {result.message}")
+        raise typer.Exit(code=1)
 
 
 def main() -> None:
