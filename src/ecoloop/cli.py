@@ -9,6 +9,8 @@ missing and how to fix it.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Annotated, cast
 
@@ -424,6 +426,36 @@ def report(
 
     destination = build_report(comparison, settings, output)
     console.print(f"[green]✓[/green] Wrote report to {destination}")
+
+
+# --------------------------------------------------------------------------- #
+# dashboard
+# --------------------------------------------------------------------------- #
+_DASHBOARD_APP_PATH = Path(__file__).parent / "dashboard" / "app.py"
+
+
+@app.command()
+def dashboard() -> None:
+    """Launch the interactive Streamlit dashboard.
+
+    ``streamlit`` is an optional dependency (``pip install -e ".[dashboard]"``)
+    since the offline HTML report (``ecoloop report``) covers the same
+    numbers without it. Streamlit has no supported in-process "run this app"
+    API, so this shells out to its own CLI entry point with a fixed,
+    hard-coded argument list — no user or LLM-controlled input ever reaches
+    this command.
+    """
+    streamlit_bin = shutil.which("streamlit")
+    if streamlit_bin is None:
+        console.print(
+            "[red]streamlit is not installed.[/red] Run: "
+            '[bold]uv pip install -e ".[dashboard]"[/bold]'
+        )
+        raise typer.Exit(code=1)
+    result = subprocess.run(  # noqa: S603
+        [streamlit_bin, "run", str(_DASHBOARD_APP_PATH)], check=False
+    )
+    raise typer.Exit(code=result.returncode)
 
 
 # --------------------------------------------------------------------------- #
