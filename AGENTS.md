@@ -115,9 +115,12 @@ Contracts live in `[tool.importlinter]` in `pyproject.toml`.
   fails afterwards.
 - Resolve handles lazily, on the first callback where `api_data_fully_ready()` is true.
   Earlier is `-1` permanently.
-- **PMV output does not exist unless the `People` object asks for it.** The stock
-  `RefBldgSmallOfficeNew2004_Chicago.idf` has *zero* Fanger objects — `prepare` injects them.
-- EnergyPlus upper-cases most identifiers. Normalise before comparing zone names.
+- **PMV output does not exist unless the `People` object asks for it.** In the stock
+  `RefBldgSmallOfficeNew2004_Chicago.idf` all five `People` objects *do* declare
+  `FANGER` — but in upper case, so `grep -c Fanger` returns 0 and reads as "missing".
+  What is genuinely absent is the `Output:Variable`; that is what `prepare` injects.
+- EnergyPlus upper-cases most identifiers. Normalise before comparing zone names —
+  and before grepping the IDF, per the line above.
 - `delete_state()` belongs in a `finally`. A leaked state corrupts the next run.
 - Meter values at `Timestep` frequency are per-timestep, not per-hour. Never sum a timestep
   series with an hourly one.

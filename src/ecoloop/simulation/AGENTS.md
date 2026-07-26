@@ -40,11 +40,20 @@ callback:    if not api.exchange.api_data_fully_ready(state): return   ← earli
 
 ## Landmines specific to this layer
 
-- The stock `RefBldgSmallOfficeNew2004_Chicago.idf` has **zero Fanger objects**, so PMV
-  output simply does not exist. `prepare` injects `People.thermal_comfort_model_type` and
-  the matching `Output:Variable`. Verify with `grep -c Fanger` on the prepared IDF, not
-  the baseline one.
-- EnergyPlus upper-cases most identifiers. Normalise zone names before comparing.
+- **PMV: check the casing before you conclude anything.** All five `People` objects in the
+  stock IDF already declare `FANGER` as their comfort model — in upper case, so
+  `grep -c Fanger` returns 0 and looks like they are missing. They are not. What is really
+  absent is the `Zone Thermal Comfort Fanger Model PMV` **`Output:Variable`**, whose key is
+  the *People* name (`Core_ZN People`), not the zone name. That is what `prepare` injects.
+- EnergyPlus upper-cases most identifiers. Normalise zone names before comparing — and
+  grep the IDF case-insensitively.
+- **All five zones share one `HTGSETP_SCH`/`CLGSETP_SCH` pair.** Actuating the schedule
+  therefore moves every zone at once. Per-zone control must use the
+  `Zone Temperature Control` actuator keyed on the zone name.
+- Heating is `Coil:Heating:Fuel`, so heating energy lands on `Heating:NaturalGas`, not
+  `Heating:Electricity`. Summing only electricity understates total site energy.
+- The stock IDF has **no `ZoneAirContaminantBalance`**, so CO₂ output is genuinely absent
+  and must be injected for the ASHRAE 62.1 ceiling to mean anything.
 - `callback_begin_new_environment` fires once per *environment* — sizing runs first, then
   the run period. Reset accumulators there; never blend the two.
 - Meters are **Joules**, and at `Timestep` frequency they are per-timestep, not per-hour.
