@@ -23,6 +23,8 @@ from ecoloop.config import EcoLoopSettings, load_settings
 from ecoloop.doctor import CheckResult, Status, run_checks
 from ecoloop.errors import EcoLoopError
 from ecoloop.logging import configure_logging
+from ecoloop.mcp.server import build_server
+from ecoloop.mcp.state import create_standalone_state
 
 app = typer.Typer(
     name="ecoloop",
@@ -179,6 +181,42 @@ def doctor(config: ConfigOption = None, profile: ProfileOption = None) -> None:
         summary += f", {len(warnings)} optional warning(s)"
     console.print(summary + ")")
     console.print()
+
+
+# --------------------------------------------------------------------------- #
+# mcp serve
+# --------------------------------------------------------------------------- #
+mcp_app = typer.Typer(help="Serve the building's live state as typed MCP tools.")
+app.add_typer(mcp_app, name="mcp")
+
+# Eco-Loop's config uses "stdio"/"http" as the abstract transport choice;
+# FastMCP's own run() takes its SDK's literal transport names directly.
+_FASTMCP_TRANSPORT: dict[str, str] = {"stdio": "stdio", "http": "streamable-http"}
+
+
+@mcp_app.command("serve")
+def mcp_serve(
+    config: ConfigOption = None,
+    profile: ProfileOption = None,
+    transport: Annotated[
+        str | None, typer.Option("--transport", help="stdio or http; defaults to mcp.transport.")
+    ] = None,
+) -> None:
+    """Start the MCP server: the LLM's only window into the building.
+
+    With no simulation attached, every observe/introspect tool reports empty
+    or "no data available" results rather than erroring, and every actuate
+    tool refuses proposals with a clear reason — this is the standalone mode
+    for exploring the tool surface or connecting Claude Desktop before a run
+    exists. A future ``ecoloop run --controller agent`` attaches a live
+    simulation's telemetry and policy store to this same server process.
+    """
+    settings = _load(config, profile)
+    configure_logging(settings.logging)
+    state = create_standalone_state(settings)
+    server = build_server(state)
+    chosen = transport or settings.mcp.transport
+    server.run(transport=_FASTMCP_TRANSPORT.get(chosen, "stdio"))  # type: ignore[arg-type]
 
 
 def main() -> None:
