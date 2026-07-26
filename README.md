@@ -16,8 +16,12 @@
 
 ---
 
-> **Status:** under active construction. Headline results land at Phase 8 and this
-> section will carry the measured numbers, not projections.
+> **Status:** all 9 build phases complete and verified against the real EnergyPlus
+> engine and a real running Ollama endpoint. Headline numbers, measured not projected:
+> rule-based control cuts real comfort violations by roughly an order of magnitude
+> versus baseline scheduling at a real, measured energy cost of ~6% (2-week profile,
+> 3241 → 3435 kWh). Full numbers, including what's proven vs. what still needs a
+> longer run, in [`docs/RESULTS.md`](docs/RESULTS.md).
 
 ## What this is
 
@@ -55,7 +59,7 @@ So Eco-Loop is a **two-tier hierarchical controller**:
   │  │ TIER 1 — REFLEX LAYER              │  │     │   │  • aggregated windows  │
   │  │ every timestep · <1 ms · no I/O    │  │     │   │  • LLM via MCP tools   │
   │  │                                    │  │     │   │  • emits ControlPolicy │
-  │  │ read policy → clamp → actuate      │  │     │   │  • cadence + triggers  │
+  │  │ read policy → clamp → actuate      │  │     │   │  • cadence-gated       │
   │  └────────────────────────────────────┘  │     │   └────────────────────────┘
   └──────────────────────────────────────────┘     │        │            ▲
               │  writes                            │        │ writes     │ reads
@@ -71,8 +75,9 @@ So Eco-Loop is a **two-tier hierarchical controller**:
 sub-millisecond. It reads the currently active immutable policy and applies it
 through actuators, enforcing guardrails in code.
 
-**Tier 2 (Cognitive)** runs on a background worker at a configurable cadence and
-on event triggers. It sees *aggregated* telemetry, reasons through MCP tools, and
+**Tier 2 (Cognitive)** runs on a background worker at a configurable cadence
+(event triggers are validated config today, not yet wired to the orchestrator —
+see `AGENTS.md`). It sees *aggregated* telemetry, reasons through MCP tools, and
 atomically swaps in a new validated policy.
 
 The simulation is therefore **never blocked by the agent**. If the LLM is slow,
@@ -89,7 +94,21 @@ make setup          # uv venv + dependencies
 ecoloop doctor      # ← run this first; diagnoses EnergyPlus, Ollama, models
 ```
 
-`ecoloop doctor` tells you exactly what is missing and how to fix it.
+`ecoloop doctor` tells you exactly what is missing and how to fix it. From there:
+
+```bash
+make run-baseline   # uncontrolled reference schedule
+make run-rulebased  # deterministic heuristic controller
+make run-agent      # LLM-supervised controller (needs Ollama running)
+make compare        # side-by-side energy + ASHRAE 55 comfort metrics
+make report         # self-contained offline HTML report (no server needed to view)
+make dashboard      # interactive Streamlit version of the same comparison
+make demo           # ≤3-minute live-TUI recording of the closed loop
+```
+
+Every `run-*` target persists its full telemetry history and a manifest under
+`results/runs/`; `compare`/`report`/`dashboard` all read the same functions
+against those manifests, so they can never disagree about a number.
 
 ## Documentation
 
