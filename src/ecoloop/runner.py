@@ -68,6 +68,10 @@ class RunManifest(BaseModel):
     telemetry_path: Path
     timesteps_published: int
     dropped_samples: int
+    """Always ``0`` here: `run_controller` records via `TelemetryRecorder` directly, not
+    through the lossy `TelemetryBus` ring buffer - there is no live MCP server or cognitive
+    worker attached to this batch run to need one. Reserved for when the `agent` controller
+    (which does need a live `TelemetryBus`) is wired in."""
     exit_code: int
     succeeded: bool
     conditioned_floor_area_m2: float | None

@@ -3,11 +3,18 @@
 Operational briefing for coding agents. Not documentation — `README.md` does that.
 If a line here doesn't change what you'd *do*, delete it.
 
-> **Build status:** Phase 7 of 9 complete (self-healing: `.err` classifier, bounded
-> patch/rerun loop, and `models/faults/broken_thermostat.idf` — a fixture verified against
-> the *real* EnergyPlus engine, not guessed at, whose exact Severe-record text the classifier
-> was written against. `ecoloop selfheal --idf <path>` runs it end to end: diagnose, patch,
-> rerun, succeed on attempt 2. 310 tests).
+> **Build status:** Phase 8 of 9 complete (analysis: `runner.py` promotes the
+> EnergyPlusBackend + ReflexCallbacks + ReflexController wiring that previously only existed
+> in test helpers to production code for `baseline`/`rulebased`; `analysis/` computes energy
+> (kWh, electricity + gas) and ASHRAE 55 comfort metrics from the persisted per-run telemetry,
+> compares runs with a fairness check that refuses to compare mismatched weather/period/engine
+> fingerprints, and renders both a self-contained offline HTML report and an interactive
+> Streamlit dashboard from the same functions. `ecoloop run baseline --profile fast`,
+> `ecoloop compare --latest`, and `ecoloop report --latest` all run end to end against the
+> real engine: baseline totals 3241 kWh with a 4.7% comfort-violation rate, rulebased totals
+> 3435 kWh with a 0.1% rate — matching the numbers Phase 3 first observed. 347 tests).
+> The `agent` controller is deliberately out of scope for `run_controller` — it needs the
+> cognitive worker-thread wiring, still a distinct integration task for Phase 9.
 > Sections marked ⏳ describe files that do not exist yet. Everything unmarked is real
 > and verified. This file is updated at the close of every phase.
 
@@ -51,10 +58,15 @@ energy by making occupants uncomfortable is an explicit failure, not a trade-off
 | Verify agent files aren't stale | `.venv/bin/python scripts/check_agent_commands.py` |
 | Diagnose and patch a broken IDF | `ecoloop selfheal --idf <path>` / `make demo-selfheal` |
 | Serve the live building over MCP | `ecoloop mcp serve` / `make mcp` |
+| Run a controller against the real engine | `ecoloop run <baseline\|rulebased\|agent\|all>` / `make run-baseline` etc. |
+| Compare controllers' energy/comfort metrics | `ecoloop compare --latest` / `make compare` |
+| Build the offline HTML report | `ecoloop report --latest` / `make report` |
+| Launch the interactive dashboard | `ecoloop dashboard` / `make dashboard` (needs `pip install -e ".[dashboard]"`) |
 
-⏳ `make prepare`, `make run-baseline`, `make run-rulebased`, `make run-agent`, `make run-all`,
-`make compare`, `make report`, `make dashboard`, `make demo`
-are declared in the `Makefile` but their `ecoloop` subcommands land in Phases 2–9.
+⏳ `make prepare` and `make demo` are declared in the `Makefile` but their `ecoloop`
+subcommands (a standalone `prepare`, and the live-TUI-driven demo) land in Phase 9.
+`ecoloop run agent` (and therefore `make run-agent`) exits non-zero with an explanation
+rather than running — it needs the cognitive worker-thread wiring, Phase 9's job.
 
 **Profiles matter.** `--profile fast` is a 2-week run period and is the default for
 iteration. `--profile full` is annual and slow — do not run it to check a one-line change.
@@ -259,6 +271,45 @@ Contracts live in `[tool.importlinter]` in `pyproject.toml`.
   class for either free-form span reintroduces the same bug one level down. Found by
   running the real `broken_thermostat.idf` fixture against the real engine and reading its
   actual Severe-record text, not by guessing at EnergyPlus's format.
+- **numpy 2.5.0 broke `mypy` under this project's `python_version = "3.11"` target** by
+  shipping an unconditional (not `sys.version_info`-gated) PEP 695 `type` statement in its
+  bundled `__init__.pyi` — a hard parse error, not a suppressible one; per-module
+  `follow_imports = "skip"` does not help, since the failure happens before per-module
+  import-following settings apply. `pyproject.toml` caps `numpy<2.5`; 2.4.x's stub still
+  uses the older `TypeAlias` form. Found by being the first phase to actually import
+  `pandas` (which pulls in `numpy`) anywhere in `src/` — every earlier phase's `pandas`/
+  `plotly`/`streamlit` dependencies were declared but code-untouched.
+- **A run's full telemetry history lives nowhere until `analysis.collect.TelemetryRecorder`
+  buffers it.** `TelemetryBus` is a bounded, drop-oldest ring buffer by design (rolling-window
+  reads for the cognitive tier, not a durable record), and EnergyPlus's own `.eso`/`.mtr`
+  output uses a different variable vocabulary and reporting frequency than the runtime
+  data-exchange point map in `config/zones.yaml`. `TelemetryRecorder` buffers flattened rows
+  in a plain Python list during the run — never written to disk from inside the EnergyPlus
+  callback, which would be I/O in a synchronous physics callback — and flushes to Parquet
+  once `run_controller()`'s call to `backend.run()` returns.
+- **Total conditioned floor area cannot be read off the IDF.** Every `Zone` object declares
+  `Floor Area = autocalculate` (this building's floor plates come from
+  `BuildingSurface:Detailed` polygons, not a literal field), and the Python data-exchange API
+  has no reportable "zone floor area" output variable. EnergyPlus computes and echoes it per
+  zone in the `.eio` file's `Zone Information` records instead, including a "Part of Total
+  Building Area" flag that already excludes the attic — `simulation/eio.py` reads the column
+  positions from that record's own header comment rather than assuming them, so a future
+  EnergyPlus version reordering columns fails loudly instead of silently misreading one.
+  Verified against a real run: sums to exactly 511.16 m², the published DOE Small Office
+  prototype total.
+- **`run_controller()` only supports `baseline`/`rulebased`, and this is a scope boundary,
+  not a missing feature waiting to be filled in casually.** Both compute their policy
+  synchronously in the callback with no LLM involved, so nothing beyond
+  `EnergyPlusBackend` + `HandleRegistry` + `ReflexCallbacks` + `ReflexController` is needed.
+  `agent` reads from a `PolicyStore` that only a worker thread running the cognitive tier's
+  cadence loop can keep current, and wiring that thread alongside EnergyPlus's blocking,
+  main-thread-owning `run()` call is a distinct integration task — `ecoloop run agent`
+  exits non-zero with that explanation rather than a stack trace.
+- **`compare_runs()` refuses to compare runs with different profiles, weather files, or
+  EnergyPlus versions (`UnfairComparisonError`), and deliberately excludes `idf_path` from
+  that check.** Every run overwrites the same `simulation.idf_prepared` destination, so the
+  path is identical across controllers regardless of what was actually simulated — including
+  it in the fairness check would validate nothing.
 
 ## 8. Conventions
 
@@ -300,14 +351,27 @@ Contracts live in `[tool.importlinter]` in `pyproject.toml`.
   chain itself already exist inline in `tests/unit/test_guardrails.py` — see §7's landmines
   on the two real bugs they found before this ever ran against a controller.
 - Mark anything needing the real engine `@pytest.mark.energyplus`.
+- `tests/unit/test_runner.py` marks the actual-run cases `@pytest.mark.energyplus` (same
+  precedent as `test_agent_selfheal.py`: `run_controller` constructs `EnergyPlusBackend`
+  directly, so it can't be exercised against the fake without an injection seam nobody
+  asked for); the "agent controller is rejected" guard test needs no engine, since it
+  returns before touching one. `test_analysis_collect.py`, `test_analysis_metrics.py`,
+  `test_analysis_comfort.py`, `test_analysis_compare.py`, `test_analysis_charts.py`, and
+  `test_analysis_report.py` all run on hand-built `DataFrame`s/manifests with no engine at
+  all — `analysis/` only ever consumes already-persisted telemetry, never EnergyPlus
+  directly, so nothing under it needs the mark.
 - **Every bug fix gets a regression test.** No exceptions.
 - Coverage on `control/` and `bus/` is 96% (`pytest --cov=src/ecoloop/control --cov=src/ecoloop/bus`).
+  `dashboard/` and `ui/` are excluded from coverage entirely (`pyproject.toml`'s
+  `[tool.coverage.run] omit`) — a Streamlit page isn't meaningfully unit-testable, so it was
+  smoke-tested by hand instead (`streamlit run` against real fast-profile run data, confirmed
+  serving HTTP 200 with no errors in the server log) rather than given hollow coverage.
 
 ## 10. Where things live
 
 ```
 config/          default.yaml is the single source of truth; profiles/ overlay it
-  prompts/       ⏳ versioned Jinja2 templates (version recorded in the trace)
+  prompts/       versioned Jinja2 templates (system_v1.j2; version recorded in the trace)
   signals/       synthetic carbon + tariff CSVs (regenerate: scripts/generate_signals.py)
 models/          baseline/ pristine IDF · prepared/ post-inject · generated/ per-run
   faults/        deliberately broken IDFs for the self-heal demo — see §12
@@ -315,12 +379,16 @@ models/          baseline/ pristine IDF · prepared/ post-inject · generated/ p
 src/ecoloop/
   config.py      layered settings   errors.py  typed hierarchy   logging.py  structlog
   doctor.py      environment checks  cli.py    Typer entry point
-  simulation/    locate/energyplus/handles/callbacks/idf/prepare/errfile/weather all work
+  runner.py      run_controller(): the full EnergyPlusBackend + ReflexCallbacks +
+                 ReflexController wiring, promoted from test-only to production, for
+                 baseline/rulebased — writes a RunManifest + telemetry.parquet per run
+  simulation/    locate/energyplus/handles/callbacks/idf/prepare/errfile/weather/eio all work
   bus/           models/telemetry/policy all work; ⏳ events (arrives with P6's triggers)
   control/       base/guardrails/ecm/baseline/rulebased/reflex all work
   agent/         context/prompts/llm/orchestrator/selfheal all work
   mcp/           server/tools_observe/tools_actuate/tools_introspect/sandbox/trace all work
-  analysis/      ⏳ metrics, comfort, compare, charts, static HTML report
+  analysis/      collect/metrics/comfort/compare/charts/report all work
+  dashboard/     app.py — Streamlit dashboard, reuses analysis/ directly (ecoloop dashboard)
 scripts/         generate_signals.py · check_agent_commands.py
 ```
 
