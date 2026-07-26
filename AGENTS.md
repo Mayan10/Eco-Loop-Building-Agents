@@ -3,9 +3,8 @@
 Operational briefing for coding agents. Not documentation — `README.md` does that.
 If a line here doesn't change what you'd *do*, delete it.
 
-> **Build status:** Phase 4 of 9 complete (fake EnergyPlus backend; the full control stack now
-> runs, unmodified, against either the real engine or the fake — 202 tests, 96% coverage on
-> `control/` and `bus/`).
+> **Build status:** Phase 5 of 9 complete (MCP server: all 17 tools live, sandboxed path
+> resolution, the agent trace writer — 272 tests, 94% coverage on `mcp/`).
 > Sections marked ⏳ describe files that do not exist yet. Everything unmarked is real
 > and verified. This file is updated at the close of every phase.
 
@@ -197,6 +196,21 @@ Contracts live in `[tool.importlinter]` in `pyproject.toml`.
   unoccupied zone — exactly the failure mode §1 calls out ("saving energy by making occupants
   uncomfortable is an explicit failure"). This is not what the rule-based-vs-agent comparison
   in later phases should look like; it is what makes baseline a *floor*, not a fair target.
+- **Every MCP tool function takes `state: ServerState` as its first parameter, and `mcp/server.py`
+  binds it via `functools.partial` before registration** — this is what lets a plain,
+  independently-testable function (call it directly with a fake state in a unit test) also
+  become a schema-correct MCP tool (the LLM never sees a `state` argument to fill in, since
+  `inspect.signature()` on a partial correctly omits the already-bound first argument).
+  **This breaks silently without `inspect.signature(bound, eval_str=True)`** — every module
+  here uses `from __future__ import annotations` (PEP 563), so an unresolved signature carries
+  bare strings (`"ZoneTelemetryResult"`) instead of the actual classes, and FastMCP's dynamic
+  pydantic model builder cannot resolve a string with no module context to look the name up
+  in. Without `eval_str=True` the server fails to start with a wall of
+  `PydanticUserError: ... is not fully defined` — one per tool with a non-trivial return type.
+- **`mcp.max_tool_result_bytes` is validated but not yet enforced.** No tool built so far
+  plausibly returns more than a few KB, so truncation was left undone rather than added
+  speculatively — a tracked gap, not an oversight, revisit if a future tool (e.g. a large
+  trace dump) can exceed it.
 - **`economiser_shift` in `control/ecm.py` does not model real free cooling** — this project
   has no outdoor-air-damper actuator wired, only zone thermostats, so lowering the cooling
   setpoint when outdoor air is mild still costs full compressor energy; it is a modest,
@@ -265,7 +279,7 @@ src/ecoloop/
   bus/           models/telemetry/policy all work; ⏳ events (arrives with P6's triggers)
   control/       base/guardrails/ecm/baseline/rulebased/reflex all work
   agent/         ⏳ orchestrator, LLM client, prompts, context budgeting, self-heal, trace
-  mcp/           ⏳ MCP server + observe/actuate/introspect tools
+  mcp/           server/tools_observe/tools_actuate/tools_introspect/sandbox/trace all work
   analysis/      ⏳ metrics, comfort, compare, charts, static HTML report
 scripts/         generate_signals.py · check_agent_commands.py
 ```
