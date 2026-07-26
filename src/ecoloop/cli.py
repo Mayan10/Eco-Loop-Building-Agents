@@ -30,7 +30,7 @@ from ecoloop.errors import EcoLoopError
 from ecoloop.logging import configure_logging
 from ecoloop.mcp.server import build_server
 from ecoloop.mcp.state import create_standalone_state
-from ecoloop.runner import SynchronousController, run_controller
+from ecoloop.runner import SynchronousController, run_agent_controller, run_controller
 from ecoloop.simulation.prepare import prepare_idf
 
 app = typer.Typer(
@@ -215,8 +215,9 @@ def mcp_serve(
     or "no data available" results rather than erroring, and every actuate
     tool refuses proposals with a clear reason — this is the standalone mode
     for exploring the tool surface or connecting Claude Desktop before a run
-    exists. A future ``ecoloop run --controller agent`` attaches a live
-    simulation's telemetry and policy store to this same server process.
+    exists. ``ecoloop run agent`` builds its own separate, in-process server
+    bound to that run's live telemetry and policy store — it does not attach
+    to a server started this way.
     """
     settings = _load(config, profile)
     configure_logging(settings.logging)
@@ -245,12 +246,15 @@ def run(
     """Run a controller against the real EnergyPlus engine end to end.
 
     ``baseline`` and ``rulebased`` compute their policy synchronously with no
-    LLM involved, so this runs them directly and persists the full-run
-    telemetry history plus a manifest for ``compare``/``report`` to consume.
-    ``agent`` needs the cognitive worker-thread wiring, a distinct
-    integration task not yet built (see ``agent/AGENTS.md``) — requesting it
-    prints that explanation rather than a bare stack trace. ``all`` runs
-    every implemented controller in sequence.
+    LLM involved. ``agent`` starts the cognitive tier on its own worker
+    thread alongside the live run, calling a real Ollama endpoint — a single
+    cognitive cycle has been observed taking on the order of minutes
+    end to end (EnergyPlus itself is routinely far faster), so a short
+    profile can legitimately complete with few or zero cycles; that is a
+    degraded success (AGENTS.md §"Degradation is the normal path"), not a
+    failure. Every mode persists the full-run telemetry history plus a
+    manifest for ``compare``/``report`` to consume. ``all`` runs every
+    controller in sequence.
     """
     if controller not in _RUN_CONTROLLER_CHOICES:
         console.print(
@@ -266,23 +270,19 @@ def run(
     to_run: list[str] = ["baseline", "rulebased", "agent"] if controller == "all" else [controller]
     exit_code = 0
     for name in to_run:
-        if name == "agent":
-            console.print(
-                "[yellow]![/yellow] 'agent' needs the cognitive worker-thread wiring, "
-                "which is not yet built (see agent/AGENTS.md)"
-                + (" — skipping." if controller == "all" else ".")
-            )
-            if controller != "all":
-                exit_code = 1
-            continue
         console.print(f"Running [bold]{name}[/bold] (profile: {chosen_profile})…")
         try:
-            manifest = run_controller(
-                settings,
-                cast("SynchronousController", name),
-                profile=chosen_profile,
-                output_dir=output_dir,
-            )
+            if name == "agent":
+                manifest = run_agent_controller(
+                    settings, profile=chosen_profile, output_dir=output_dir
+                )
+            else:
+                manifest = run_controller(
+                    settings,
+                    cast("SynchronousController", name),
+                    profile=chosen_profile,
+                    output_dir=output_dir,
+                )
         except EcoLoopError as exc:
             console.print(f"[red]✗[/red] {name} failed to start: {exc}")
             exit_code = 1

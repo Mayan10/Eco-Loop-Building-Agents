@@ -13,13 +13,15 @@ code, plus persistence of the run's telemetry history via
 :mod:`ecoloop.analysis.collect` so a comparison report has something to read
 afterward.
 
-**Deliberately scoped to the synchronous controllers.** ``baseline`` and
-``rulebased`` compute a policy in the callback itself, with no latency to
-hide — so running them needs nothing beyond this module. ``agent`` reads from
-a :class:`~ecoloop.bus.policy.PolicyStore` that only a worker thread running
-the cognitive tier's cadence loop can keep current; wiring that thread
-alongside EnergyPlus's blocking, main-thread-owning ``run()`` call is a
-distinct integration task (see ``agent/AGENTS.md``), not attempted here.
+**``agent`` gets the same treatment, plus a worker thread.** It reads from a
+:class:`~ecoloop.bus.policy.PolicyStore` that only a worker thread running the
+cognitive tier's cadence loop can keep current — :func:`run_agent_controller`
+starts a :class:`~ecoloop.agent.worker.CognitiveWorker` on its own thread
+before EnergyPlus's blocking, main-thread-owning ``run()`` call, and stops it
+once that call returns. The two threads share exactly the two objects the
+architecture allows to cross the boundary — a live
+:class:`~ecoloop.bus.telemetry.TelemetryBus` and
+:class:`~ecoloop.bus.policy.PolicyStore` — and nothing else.
 """
 
 from __future__ import annotations
@@ -30,21 +32,35 @@ from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict
 
+from ecoloop.agent.llm import LLMClient, OllamaClient
+from ecoloop.agent.worker import CognitiveWorker
 from ecoloop.analysis.collect import TelemetryRecorder
+from ecoloop.bus.models import TelemetrySample
+from ecoloop.bus.policy import PolicyStore
+from ecoloop.bus.telemetry import TelemetryBus
 from ecoloop.config import EcoLoopSettings
 from ecoloop.control.reflex import ReflexController
 from ecoloop.errors import EcoLoopError
 from ecoloop.logging import get_logger
+from ecoloop.mcp.server import build_server
+from ecoloop.mcp.state import ServerState
+from ecoloop.mcp.trace import TraceWriter
 from ecoloop.simulation.callbacks import ReflexCallbacks
 from ecoloop.simulation.eio import conditioned_floor_area_m2
 from ecoloop.simulation.energyplus import EnergyPlusBackend
 from ecoloop.simulation.errfile import parse_err_file
 from ecoloop.simulation.handles import HandleRegistry, load_zone_map
 from ecoloop.simulation.idf import set_idd
-from ecoloop.simulation.locate import discover_energyplus
+from ecoloop.simulation.locate import EnergyPlusInstall, discover_energyplus
 from ecoloop.simulation.prepare import prepare_idf
+from ecoloop.simulation.weather import load_epw
 
-__all__ = ["RunManifest", "SynchronousController", "run_controller"]
+__all__ = [
+    "RunManifest",
+    "SynchronousController",
+    "run_agent_controller",
+    "run_controller",
+]
 
 _logger = get_logger(__name__, component="runner")
 
@@ -68,10 +84,10 @@ class RunManifest(BaseModel):
     telemetry_path: Path
     timesteps_published: int
     dropped_samples: int
-    """Always ``0`` here: `run_controller` records via `TelemetryRecorder` directly, not
-    through the lossy `TelemetryBus` ring buffer - there is no live MCP server or cognitive
-    worker attached to this batch run to need one. Reserved for when the `agent` controller
-    (which does need a live `TelemetryBus`) is wired in."""
+    """Always ``0`` for `run_controller`: it records via `TelemetryRecorder` directly, not
+    through a `TelemetryBus`, since baseline/rulebased have no worker thread to need one for.
+    `run_agent_controller` does run a live `TelemetryBus` (for the cognitive worker thread to
+    read) and reports its real drop count here."""
     exit_code: int
     succeeded: bool
     conditioned_floor_area_m2: float | None
@@ -174,6 +190,179 @@ def run_controller(
     )
     ended_at = datetime.now(UTC)
 
+    return _finalize_run(
+        controller=controller,
+        profile=profile,
+        settings=settings,
+        install=install,
+        started_at=started_at,
+        ended_at=ended_at,
+        prepared_idf=prepared_idf,
+        resolved_weather=resolved_weather,
+        resolved_output_dir=resolved_output_dir,
+        recorder=recorder,
+        exit_code=exit_code,
+        dropped_samples=0,
+    )
+
+
+def run_agent_controller(
+    settings: EcoLoopSettings,
+    *,
+    profile: str = "fast",
+    idf_path: Path | None = None,
+    weather_path: Path | None = None,
+    output_dir: Path | None = None,
+    llm: LLMClient | None = None,
+) -> RunManifest:
+    """Run the agent controller, with the cognitive tier on its own worker thread.
+
+    Args:
+        settings: Loaded Eco-Loop settings; ``control.controller`` is forced
+            to ``"agent"`` if not already set.
+        profile: Label recorded in the manifest and used to build a default
+            ``output_dir``.
+        idf_path: Override for the source IDF; defaults to
+            ``simulation.idf_baseline``.
+        weather_path: Override for the weather file; defaults to
+            ``simulation.weather``.
+        output_dir: Override for the run's output directory; defaults to
+            ``results/runs/<profile>/agent/<timestamp>/``.
+        llm: Override for the LLM client — a real
+            :class:`~ecoloop.agent.llm.OllamaClient` against ``settings.llm``
+            if omitted; tests pass a scripted double.
+
+    Returns:
+        A manifest describing the completed run, in the same shape
+        :func:`run_controller` returns.
+    """
+    if settings.control.controller != "agent":
+        settings = settings.model_copy(
+            update={"control": settings.control.model_copy(update={"controller": "agent"})}
+        )
+
+    install = discover_energyplus(settings.simulation.energyplus_dir)
+    set_idd(install.root / "Energy+.idd")
+
+    prepared_idf = prepare_idf(settings, idf_path=idf_path)
+    resolved_weather = weather_path or settings.resolve(settings.simulation.weather)
+    resolved_output_dir = output_dir or (
+        settings.project.results_dir / "runs" / profile / "agent" / _timestamp_label()
+    )
+    resolved_output_dir.mkdir(parents=True, exist_ok=True)
+
+    zone_map = load_zone_map(settings.resolve(Path("config/zones.yaml")))
+    conditioned_names = tuple(zone.name for zone in zone_map.zones if zone.conditioned)
+
+    telemetry_bus = TelemetryBus(capacity=settings.bus.telemetry_capacity)
+    policy_store = PolicyStore(
+        default_ttl_minutes=settings.bus.policy.default_ttl_minutes,
+        max_age_minutes=settings.bus.policy.max_age_minutes,
+    )
+    reflex = ReflexController(
+        zone_names=conditioned_names,
+        control=settings.control,
+        guardrails=settings.guardrails,
+        occupied_threshold_fraction=settings.comfort.occupied_threshold_fraction,
+        ttl_minutes=settings.bus.policy.default_ttl_minutes,
+        policy_store=policy_store,
+    )
+
+    state = ServerState(
+        settings=settings,
+        telemetry=telemetry_bus,
+        policy=policy_store,
+        zone_map=zone_map,
+        reflex=reflex,
+        weather=load_epw(resolved_weather),
+        err_path=resolved_output_dir / "eplusout.err",
+        trace=TraceWriter(
+            resolved_output_dir / "agent_trace.jsonl",
+            max_bytes=settings.logging.max_trace_mib * 1024 * 1024,
+        ),
+        sandbox_roots=settings.mcp.sandbox_roots,
+    )
+    server = build_server(state)
+    llm_client = llm or OllamaClient(
+        settings.llm, cache_dir=settings.resolve(settings.llm.cache.dir)
+    )
+    worker = CognitiveWorker(state, server, llm_client, settings.agent)
+
+    recorder = TelemetryRecorder()
+    registry = HandleRegistry(zone_map)
+    backend = EnergyPlusBackend(install)
+
+    def on_sample(sample: TelemetrySample) -> None:
+        recorder.record(sample)
+        telemetry_bus.put_nowait(sample)
+
+    callbacks = ReflexCallbacks(backend, zone_map, registry, on_sample, reflex_controller=reflex)
+
+    started_at = datetime.now(UTC)
+    registry.request_all(backend)
+    callbacks.register()
+    worker.start()
+    _logger.info(
+        "starting run",
+        controller="agent",
+        profile=profile,
+        idf=str(prepared_idf),
+        output_dir=str(resolved_output_dir),
+    )
+    # A cognitive cycle can legitimately make up to max_tool_calls_per_invocation
+    # LLM round trips, each bounded by request_timeout_seconds - an in-flight
+    # cycle deserves that much time to finish cleanly rather than being
+    # abandoned on an arbitrary short timeout after EnergyPlus itself
+    # (routinely much faster than a real LLM call) has already finished.
+    worker_stop_timeout = (
+        settings.agent.max_tool_calls_per_invocation * settings.llm.request_timeout_seconds
+    )
+    try:
+        exit_code = backend.run(
+            idf_path=prepared_idf, weather_path=resolved_weather, output_dir=resolved_output_dir
+        )
+    finally:
+        worker.stop(timeout_seconds=worker_stop_timeout)
+    ended_at = datetime.now(UTC)
+    _logger.info("cognitive worker stopped", cycles_run=worker.cycles_run)
+
+    return _finalize_run(
+        controller="agent",
+        profile=profile,
+        settings=settings,
+        install=install,
+        started_at=started_at,
+        ended_at=ended_at,
+        prepared_idf=prepared_idf,
+        resolved_weather=resolved_weather,
+        resolved_output_dir=resolved_output_dir,
+        recorder=recorder,
+        exit_code=exit_code,
+        dropped_samples=telemetry_bus.dropped_count,
+    )
+
+
+def _finalize_run(
+    *,
+    controller: str,
+    profile: str,
+    settings: EcoLoopSettings,
+    install: EnergyPlusInstall,
+    started_at: datetime,
+    ended_at: datetime,
+    prepared_idf: Path,
+    resolved_weather: Path,
+    resolved_output_dir: Path,
+    recorder: TelemetryRecorder,
+    exit_code: int,
+    dropped_samples: int,
+) -> RunManifest:
+    """Parse the finished run's ``.err``/``.eio``, persist telemetry, and write a manifest.
+
+    Shared tail for both :func:`run_controller` and :func:`run_agent_controller`,
+    since everything after EnergyPlus's ``run()`` returns is identical
+    regardless of which controller drove the run.
+    """
     err_path = resolved_output_dir / "eplusout.err"
     try:
         summary = parse_err_file(err_path, max_bytes=settings.simulation.output.max_err_bytes)
@@ -205,7 +394,7 @@ def run_controller(
         output_dir=resolved_output_dir,
         telemetry_path=telemetry_path,
         timesteps_published=len(recorder),
-        dropped_samples=0,
+        dropped_samples=dropped_samples,
         exit_code=exit_code,
         succeeded=succeeded,
         conditioned_floor_area_m2=floor_area,
