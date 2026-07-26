@@ -1,0 +1,50 @@
+# Mirrors the CI quality gates so failures surface before push, not after.
+# Install once with:  .venv/bin/pre-commit install
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.(idf|epw|ddy)$'
+      - id: end-of-file-fixer
+        exclude: '\.(idf|epw|ddy)$'
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=2048]
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+        files: ^(src|tests|scripts)/
+      - id: ruff-format
+        files: ^(src|tests|scripts)/
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.15.0
+    hooks:
+      - id: mypy
+        files: ^src/ecoloop/
+        args: [--strict, --ignore-missing-imports]
+        additional_dependencies:
+          - pydantic>=2.7
+          - pydantic-settings>=2.3
+          - types-PyYAML
+
+  - repo: local
+    hooks:
+      # An agent file quoting a command that no longer exists is a bug: the
+      # next agent will trust it and waste a cycle discovering it is wrong.
+      - id: agent-command-check
+        name: agent files quote only real commands
+        entry: .venv/bin/python scripts/check_agent_commands.py
+        language: system
+        pass_filenames: false
+        files: '(AGENTS\.md|CLAUDE\.md|Makefile|src/ecoloop/cli\.py)$'

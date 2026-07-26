@@ -1,0 +1,96 @@
+name: CI
+
+# The whole suite must pass on a runner with neither EnergyPlus nor Ollama
+# installed. That is the point of tests/fakes/: the control loop is exercised
+# end-to-end against an in-memory thermal double in milliseconds.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_HTTP_TIMEOUT: "300"
+
+jobs:
+  quality:
+    name: lint · typecheck · test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install project
+        run: |
+          uv venv --python ${{ matrix.python-version }}
+          uv pip install -e ".[dev,dashboard]"
+
+      - name: Lint
+        run: |
+          .venv/bin/ruff check src tests --output-format=github
+          .venv/bin/ruff format --check src tests
+
+      - name: Typecheck
+        run: .venv/bin/mypy src/ecoloop
+
+      - name: Verify architectural layering
+        # simulation/ and control/ must never import agent/; bus/ depends on
+        # nothing. Violating this fails the build rather than rotting quietly.
+        run: .venv/bin/lint-imports
+
+      - name: Confirm EnergyPlus really is absent
+        # Guards against the suite accidentally depending on a local install.
+        run: |
+          if command -v energyplus >/dev/null 2>&1; then
+            echo "::error::EnergyPlus is on PATH; this job must prove the suite runs without it"
+            exit 1
+          fi
+          echo "EnergyPlus is not installed — proceeding, as intended."
+
+      - name: Test with coverage
+        run: .venv/bin/pytest --cov --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          if-no-files-found: warn
+
+  agent-files:
+    name: agent-file command check
+    runs-on: ubuntu-latest
+    # Every command quoted in AGENTS.md / CLAUDE.md must exist as a make target
+    # or an ecoloop subcommand. A stale command in an agent file is worse than
+    # no command, because the agent will trust it.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install project
+        run: |
+          uv venv --python 3.12
+          uv pip install -e ".[dev,dashboard]"
+
+      - name: Check documented commands exist
+        run: .venv/bin/python scripts/check_agent_commands.py
