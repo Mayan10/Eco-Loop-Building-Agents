@@ -118,6 +118,9 @@ ignore = [
 "tests/**" = ["D", "S101", "ANN", "PLR2004", "S105", "S106"]
 "src/ecoloop/dashboard/**" = ["T20"]
 "scripts/**" = ["T20", "D"]
+# Real, captured EnergyPlus .eio lines - wrapping them would stop being the
+# real captured output the parser is tested against.
+"tests/unit/test_simulation_eio.py" = ["E501"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
