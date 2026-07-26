@@ -3,9 +3,9 @@
 Operational briefing for coding agents. Not documentation — `README.md` does that.
 If a line here doesn't change what you'd *do*, delete it.
 
-> **Build status:** Phase 3 of 9 complete (telemetry bus, policy store, guardrails, reflex
-> controller, baseline and rule-based controllers — verified end to end against a real
-> EnergyPlus 25.2.0 install, rule-based vs. baseline compared on the fast profile).
+> **Build status:** Phase 4 of 9 complete (fake EnergyPlus backend; the full control stack now
+> runs, unmodified, against either the real engine or the fake — 202 tests, 96% coverage on
+> `control/` and `bus/`).
 > Sections marked ⏳ describe files that do not exist yet. Everything unmarked is real
 > and verified. This file is updated at the close of every phase.
 
@@ -203,6 +203,17 @@ Contracts live in `[tool.importlinter]` in `pyproject.toml`.
   honestly-limited heuristic, not genuine economiser savings. It also fired on well under 1%
   of timesteps in the fast profile's July window (Chicago summer rarely sits in a 4-18 °C
   band during the day), so it is not what drove the energy difference above.
+- **`min_hold_minutes` and the rate cap interact multiplicatively for a monotonic change,
+  not just for oscillation.** A controller that consistently proposes movement in the same
+  direction (e.g. baseline's several-degree unoccupied setback) still gets its first step
+  refused by the hold check, then waits out `min_hold_minutes` again after every subsequent
+  step, because each real change resets `minutes_since_change` to zero. The result is a
+  "move a little, then wait, then move a little more" ratchet, not a continuous ramp at the
+  rate cap — over one unoccupied window it can converge far short of the target. This is a
+  legitimate reading of "hold for at least `min_hold_minutes` between changes," not a bug,
+  but it means the rate cap alone does not predict convergence time; the two settings
+  together do. Found via the fake-backend end-to-end test expecting full convergence within
+  a 6-hour unoccupied window and getting 17.35 °C instead of 15.6 °C.
 
 ## 8. Conventions
 
@@ -221,12 +232,22 @@ Contracts live in `[tool.importlinter]` in `pyproject.toml`.
 
 - **The suite runs with EnergyPlus and Ollama absent.** CI actively asserts `energyplus` is
   not on `PATH` before running, so the fakes cannot silently stop being exercised.
-- ⏳ `tests/fakes/fake_energyplus.py` (lumped-capacitance thermal double) and
-  `fake_llm.py` (scripted, can emit valid / malformed / absurd / timeout) arrive in Phase 4.
-- ⏳ `tests/property/` asserts guardrail invariants with `hypothesis` over *arbitrary* LLM
-  output. `tests/chaos/` kills the LLM mid-run and asserts the simulation still completes.
+- `tests/fakes/fake_energyplus.py` works: a lumped-capacitance thermal double implementing
+  `SimulationBackend`, understanding the exact variable/meter/actuator vocabulary in
+  `config/zones.yaml`. `tests/unit/test_end_to_end_control.py` runs `HandleRegistry`,
+  `ReflexCallbacks` and every `control/` controller — the same unmodified production code
+  that ran against real EnergyPlus — against this fake instead, which is the strongest test
+  in the suite: it proves the `SimulationBackend` protocol seam is real, not just that the
+  fake behaves. ⏳ `fake_llm.py` (scripted valid / malformed / absurd / timeout) arrives with
+  the LLM client in Phase 6 — faking an interface that doesn't exist yet isn't meaningful.
+- ⏳ `tests/property/` (dedicated hypothesis suite over *arbitrary* LLM output) and
+  `tests/chaos/` (kills the LLM mid-run, asserts the simulation still completes) arrive in
+  Phase 6, once there is an LLM client to aim them at. Property tests on the guardrail chain
+  itself already exist inline in `tests/unit/test_guardrails.py` — see §7's landmines on the
+  two real bugs they found before this ever ran against a controller.
 - Mark anything needing the real engine `@pytest.mark.energyplus`.
 - **Every bug fix gets a regression test.** No exceptions.
+- Coverage on `control/` and `bus/` is 96% (`pytest --cov=src/ecoloop/control --cov=src/ecoloop/bus`).
 
 ## 10. Where things live
 
