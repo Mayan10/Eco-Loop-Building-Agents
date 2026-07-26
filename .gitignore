@@ -29,6 +29,7 @@ results/
 !results/.gitkeep
 models/generated/
 !models/generated/.gitkeep
+models/prepared/
 *.eso
 *.eio
 *.mtd

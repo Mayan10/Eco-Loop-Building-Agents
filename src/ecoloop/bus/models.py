@@ -217,5 +217,11 @@ class TelemetrySample(_Frozen):
             Facility electricity plus facility natural gas, in Joules. Heating
             in this building is ``Coil:Heating:Fuel``, so an electricity-only
             total understates site energy by the entire heating season.
+            Electricity is read from ``ElectricityNet:Facility`` rather than
+            ``Electricity:Facility`` — see the note in ``config/zones.yaml``
+            (AGENTS.md landmine): the latter inexplicably fails to resolve
+            through the EnergyPlus Python API despite being a perfectly real
+            meter, while the two are numerically identical for a building with
+            no on-site generation.
         """
-        return self.meter("Electricity:Facility") + self.meter("NaturalGas:Facility")
+        return self.meter("ElectricityNet:Facility") + self.meter("NaturalGas:Facility")
