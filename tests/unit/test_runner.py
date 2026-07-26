@@ -49,6 +49,7 @@ class TestRunController:
         assert manifest.timesteps_published > 0
         assert manifest.telemetry_path.is_file()
         assert (output_dir / "manifest.json").is_file()
+        assert manifest.conditioned_floor_area_m2 == pytest.approx(511.16, abs=0.01)
 
         df = pd.read_parquet(manifest.telemetry_path)
         assert len(df) == manifest.timesteps_published

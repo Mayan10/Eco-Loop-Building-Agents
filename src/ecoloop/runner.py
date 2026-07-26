@@ -36,6 +36,7 @@ from ecoloop.control.reflex import ReflexController
 from ecoloop.errors import EcoLoopError
 from ecoloop.logging import get_logger
 from ecoloop.simulation.callbacks import ReflexCallbacks
+from ecoloop.simulation.eio import conditioned_floor_area_m2
 from ecoloop.simulation.energyplus import EnergyPlusBackend
 from ecoloop.simulation.errfile import parse_err_file
 from ecoloop.simulation.handles import HandleRegistry, load_zone_map
@@ -68,6 +69,8 @@ class RunManifest(BaseModel):
     dropped_samples: int
     exit_code: int
     succeeded: bool
+    conditioned_floor_area_m2: float | None
+    """``None`` when the run failed before an ``.eio`` file could be parsed."""
 
     def write(self, path: Path) -> None:
         """Write this manifest to ``path`` as JSON.
@@ -177,6 +180,15 @@ def run_controller(
     telemetry_path = resolved_output_dir / "telemetry.parquet"
     recorder.write(telemetry_path)
 
+    floor_area: float | None = None
+    try:
+        floor_area = conditioned_floor_area_m2(resolved_output_dir / "eplusout.eio")
+    except EcoLoopError:
+        _logger.exception(
+            "could not compute conditioned floor area after run",
+            output_dir=str(resolved_output_dir),
+        )
+
     manifest = RunManifest(
         controller=controller,
         profile=profile,
@@ -190,6 +202,7 @@ def run_controller(
         dropped_samples=0,
         exit_code=exit_code,
         succeeded=succeeded,
+        conditioned_floor_area_m2=floor_area,
     )
     manifest.write(resolved_output_dir / "manifest.json")
     _logger.info(
