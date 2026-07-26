@@ -43,7 +43,14 @@ dependencies = [
   # line that the analysis layer and pyarrow export path are written against.
   "pandas>=2.2,<3.0",
   "pyarrow>=16.0",
-  "numpy>=1.26,<3.0",
+  # numpy 2.5.0 started shipping an unconditional (not sys.version_info-gated)
+  # PEP 695 `type` statement in its bundled __init__.pyi, which is invalid
+  # syntax for mypy to parse under this project's python_version = "3.11"
+  # target (a hard parse error, not a suppressible one - `follow_imports =
+  # "skip"` does not help, since the failure is at the parse stage before
+  # per-module import-following settings apply). Capped below the first
+  # affected release; 2.4.x's stub still uses the older TypeAlias form.
+  "numpy>=1.26,<2.5",
   "plotly>=5.22",
 ]
 
