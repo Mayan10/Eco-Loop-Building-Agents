@@ -144,6 +144,11 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
+# Makes tests/fakes/*.py importable as bare modules (e.g. `from fake_energyplus
+# import ...`) from any test directory, matching the bare-import style already
+# used within tests/unit - without this, only a test *file's own* directory is
+# on sys.path, and tests/property or tests/chaos could never reach the fakes.
+pythonpath = ["tests/fakes"]
 addopts = "-ra --strict-markers --strict-config"
 asyncio_mode = "auto"
 markers = [
