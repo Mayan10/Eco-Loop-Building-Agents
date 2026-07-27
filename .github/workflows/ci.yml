@@ -65,7 +65,7 @@ jobs:
           echo "EnergyPlus is not installed — proceeding, as intended."
 
       - name: Test with coverage
-        run: .venv/bin/pytest --cov --cov-report=xml --cov-report=term-missing
+        run: .venv/bin/pytest -m "not energyplus and not ollama" --cov --cov-report=xml --cov-report=term-missing
 
       - name: Upload coverage
         if: matrix.python-version == '3.12'

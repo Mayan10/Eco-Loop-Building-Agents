@@ -4,7 +4,7 @@
 
 ### An autonomous closed-loop building control agent
 
-**A high-fidelity EnergyPlus building simulation, supervised in real time by a local open-source LLM speaking Model Context Protocol — closing the control loop with no human in it.**
+**A high-fidelity EnergyPlus building simulation, supervised in real time by a local open-source LLM speaking Model Context Protocol, closing the control loop with no human in it.**
 
 [![CI](https://github.com/Mayan10/Eco-Loop-Building-Agents/actions/workflows/ci.yml/badge.svg)](https://github.com/Mayan10/Eco-Loop-Building-Agents/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
@@ -30,8 +30,8 @@ commissioning and drift for a decade. Eco-Loop turns a simulated building into a
 **active agent** that observes itself and corrects its own operation.
 
 An EnergyPlus whole-building simulation runs as a digital sandbox. While it is
-running it streams telemetry — zone temperatures, humidity, CO₂, Fanger PMV/PPD
-comfort indices, HVAC power draw, outdoor conditions — to a locally-served
+running it streams telemetry (zone temperatures, humidity, CO₂, Fanger PMV/PPD
+comfort indices, HVAC power draw, outdoor conditions) to a locally-served
 open-source LLM. The model reasons over that telemetry against comfort targets,
 peak-demand limits and grid carbon intensity, and **injects new set-points
 forward into the still-running simulation**. No human in the loop.
@@ -44,7 +44,7 @@ energy by making occupants uncomfortable is an explicit failure condition.
 
 An annual simulation at 6 timesteps/hour is **52,560 timesteps**. An LLM
 inference is 1–10 seconds. Calling the model inside the EnergyPlus timestep
-callback would mean 15–145 hours of wall clock — and because the callback is
+callback would mean 15-145 hours of wall clock, and because the callback is
 *synchronous*, every one of those seconds stalls the physics solver.
 
 So Eco-Loop is a **two-tier hierarchical controller**:
@@ -53,10 +53,10 @@ So Eco-Loop is a **two-tier hierarchical controller**:
                     main thread                    │        worker thread
                                                    │
   ┌──────────────────────────────────────────┐     │   ┌────────────────────────┐
-  │  EnergyPlus  (C++ physics solver)        │     │   │  TIER 2 — COGNITIVE    │
+  │  EnergyPlus  (C++ physics solver)        │     │   │  TIER 2 - COGNITIVE    │
   │                                          │     │   │  slow · agentic · async│
   │  ┌────────────────────────────────────┐  │     │   │                        │
-  │  │ TIER 1 — REFLEX LAYER              │  │     │   │  • aggregated windows  │
+  │  │ TIER 1 - REFLEX LAYER              │  │     │   │  • aggregated windows  │
   │  │ every timestep · <1 ms · no I/O    │  │     │   │  • LLM via MCP tools   │
   │  │                                    │  │     │   │  • emits ControlPolicy │
   │  │ read policy → clamp → actuate      │  │     │   │  • cadence-gated       │
@@ -76,7 +76,7 @@ sub-millisecond. It reads the currently active immutable policy and applies it
 through actuators, enforcing guardrails in code.
 
 **Tier 2 (Cognitive)** runs on a background worker at a configurable cadence
-(event triggers are validated config today, not yet wired to the orchestrator —
+(event triggers are validated config today, not yet wired to the orchestrator;
 see `AGENTS.md`). It sees *aggregated* telemetry, reasons through MCP tools, and
 atomically swaps in a new validated policy.
 
@@ -123,4 +123,4 @@ against those manifests, so they can never disagree about a number.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
